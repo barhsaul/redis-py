@@ -2779,6 +2779,10 @@ class TestRedisCommands:
         r.xadd(stream, {'foo': 'bar'})
         assert r.xtrim(stream, None, approximate=True, minid=m3) == 0
 
+        with pytest.raises(redis.DataError):
+            assert r.xtrim(stream, 3, approximate=True, minid=15)
+
+
     def test_bitfield_operations(self, r):
         # comments show affected bits
         bf = r.bitfield('a')

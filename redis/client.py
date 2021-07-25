@@ -2863,6 +2863,9 @@ class Redis:
         limit: specifies the maximum number of entries to retrieve
         """
         pieces = []
+        if maxlen is not None and minid is not None:
+            raise DataError("maxlen or minid must be specified but not both.")
+
         if maxlen is not None:
             pieces.append(b'MAXLEN')
         if minid is not None:
