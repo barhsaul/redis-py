@@ -36,3 +36,22 @@ def str_if_bytes(value):
 
 def safe_str(value):
     return str(str_if_bytes(value))
+
+
+def dict_merge(*dicts):
+    """
+    Merge all provided dicts into 1 dict.
+    """
+    merged = {}
+
+    for d in dicts:
+        if not isinstance(d, dict):
+            raise ValueError('Value should be of dict type')
+        else:
+            merged.update(d)
+
+    return merged
+
+
+def list_keys_to_dict(key_list, callback):
+    return dict.fromkeys(key_list, callback)

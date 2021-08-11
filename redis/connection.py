@@ -27,7 +27,14 @@ from redis.exceptions import (
     TimeoutError,
     ModuleError,
 )
-from redis.utils import HIREDIS_AVAILABLE, str_if_bytes
+from redis.utils import HIREDIS_AVAILABLE, str_if_bytes, dict_merge
+
+# rediscluster imports
+from .exceptions import (
+    AskError, MovedError,
+    TryAgainError, ClusterDownError, ClusterCrossSlotError,
+    MasterDownError,
+)
 
 try:
     import ssl
@@ -488,6 +495,20 @@ if HIREDIS_AVAILABLE:
     DefaultParser = HiredisParser
 else:
     DefaultParser = PythonParser
+
+
+class ClusterParser(DefaultParser):
+    """
+    """
+    EXCEPTION_CLASSES = dict_merge(
+        DefaultParser.EXCEPTION_CLASSES, {
+            'ASK': AskError,
+            'TRYAGAIN': TryAgainError,
+            'MOVED': MovedError,
+            'CLUSTERDOWN': ClusterDownError,
+            'CROSSSLOT': ClusterCrossSlotError,
+            'MASTERDOWN': MasterDownError,
+        })
 
 
 class Connection:
@@ -981,6 +1002,65 @@ def parse_url(url):
                          'schemes (%s)' % valid_schemes)
 
     return kwargs
+
+class ClusterConnection(Connection):
+    "Manages TCP communication to and from a Redis server"
+
+    def __init__(self, *args, **kwargs):
+        # Creating new ClusterConnection instance
+        self.readonly = kwargs.pop('readonly', False)
+        kwargs['parser_class'] = ClusterParser
+        super(ClusterConnection, self).__init__(*args, **kwargs)
+
+    def on_connect(self):
+        '''
+        Initialize the connection, authenticate and select a database and send READONLY if it is
+        set during object initialization.
+        '''
+        super(ClusterConnection, self).on_connect()
+
+        if self.readonly:
+            # Sending READONLY command to server to configure connection as readonly
+            self.send_command('READONLY')
+
+            if str_if_bytes(self.read_response()) != 'OK':
+                raise ConnectionError('READONLY command failed')
+
+
+class SSLClusterConnection(SSLConnection):
+    """
+    Manages TCP communication over TLS/SSL to and from a Redis cluster
+    Usage:
+        pool = ClusterConnectionPool(connection_class=SSLClusterConnection, ...)
+        client = RedisCluster(connection_pool=pool)
+    """
+
+    def __init__(self, *args, **kwargs):
+        log.debug("Creating new SSLClusterConnection instance")
+        log.debug(str(args) + " : " + str(kwargs))
+
+        self.readonly = kwargs.pop('readonly', False)
+        # need to pop this off as the redis/connection.py SSLConnection init doesn't work with ssl passed in
+        if 'ssl' in kwargs:
+            kwargs.pop('ssl')
+        kwargs['parser_class'] = ClusterParser
+        super(SSLClusterConnection, self).__init__(**kwargs)
+
+    def on_connect(self):
+        '''
+        Initialize the connection, authenticate and select a database and send READONLY if it is
+        set during object initialization.
+        '''
+        super(SSLClusterConnection, self).on_connect()
+
+        if self.readonly:
+            log.debug("Sending READONLY command to server to configure connection as readonly")
+
+            self.send_command('READONLY')
+
+            if str_if_bytes(self.read_response()) != 'OK':
+                raise ConnectionError('READONLY command failed')
+
 
 
 class ConnectionPool:

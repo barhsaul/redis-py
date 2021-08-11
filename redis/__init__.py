@@ -1,4 +1,5 @@
 from redis.client import Redis, StrictRedis
+from redis.cluster import RedisCluster
 from redis.connection import (
     BlockingConnectionPool,
     ConnectionPool,
@@ -56,4 +57,5 @@ __all__ = [
     'TimeoutError',
     'UnixDomainSocketConnection',
     'WatchError',
+    'RedisCluster',
 ]
