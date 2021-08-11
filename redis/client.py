@@ -824,7 +824,7 @@ class Redis(RedisModuleCommands, CoreCommands, object):
                  ssl_check_hostname=False,
                  max_connections=None, single_connection_client=False,
                  health_check_interval=0, client_name=None, username=None,
-                 retry=None):
+                 retry=None, connection_class=None):
         """
         Initialize a new Redis client.
         To specify a retry policy, first set `retry_on_timeout` to `True`
@@ -879,6 +879,8 @@ class Redis(RedisModuleCommands, CoreCommands, object):
                         'ssl_ca_certs': ssl_ca_certs,
                         'ssl_check_hostname': ssl_check_hostname,
                     })
+            if connection_class is not None:
+                kwargs.update({'connection_class': connection_class})
             connection_pool = ConnectionPool(**kwargs)
         self.connection_pool = connection_pool
         self.connection = None

@@ -28,9 +28,16 @@ from redis.exceptions import (
     TimeoutError,
     ModuleError,
 )
-from redis.utils import HIREDIS_AVAILABLE, str_if_bytes
+from redis.utils import HIREDIS_AVAILABLE, str_if_bytes, dict_merge
 from redis.backoff import NoBackoff
 from redis.retry import Retry
+
+# rediscluster imports
+from .exceptions import (
+    AskError, MovedError,
+    TryAgainError, ClusterDownError, ClusterCrossSlotError,
+    MasterDownError,
+)
 
 try:
     import ssl
@@ -494,6 +501,20 @@ if HIREDIS_AVAILABLE:
     DefaultParser = HiredisParser
 else:
     DefaultParser = PythonParser
+
+
+class ClusterParser(DefaultParser):
+    """
+    """
+    EXCEPTION_CLASSES = dict_merge(
+        DefaultParser.EXCEPTION_CLASSES, {
+            'ASK': AskError,
+            'TRYAGAIN': TryAgainError,
+            'MOVED': MovedError,
+            'CLUSTERDOWN': ClusterDownError,
+            'CROSSSLOT': ClusterCrossSlotError,
+            'MASTERDOWN': MasterDownError,
+        })
 
 
 class Connection:
