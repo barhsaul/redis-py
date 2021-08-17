@@ -581,8 +581,8 @@ class Redis:
     """
     RESPONSE_CALLBACKS = {
         **string_keys_to_dict(
-            'AUTH COPY EXPIRE EXPIREAT HEXISTS HMSET MOVE MSETNX PERSIST '
-            'PSETEX RENAMENX SISMEMBER SMOVE SETEX SETNX',
+            'AUTH COPY EXPIRE EXPIREAT HEXISTS HMSET LMOVE BLMOVE MOVE '
+            'MSETNX PERSIST PSETEX RENAMENX SISMEMBER SMOVE SETEX SETNX',
             bool
         ),
         **string_keys_to_dict(
@@ -615,7 +615,7 @@ class Redis:
             lambda r: r and set(r) or set()
         ),
         **string_keys_to_dict(
-            'ZPOPMAX ZPOPMIN ZINTER ZDIFF ZRANGE ZRANGEBYSCORE '
+            'ZPOPMAX ZPOPMIN ZINTER ZDIFF ZUNION ZRANGE ZRANGEBYSCORE '
             'ZREVRANGE ZREVRANGEBYSCORE', zset_score_pairs
         ),
         **string_keys_to_dict('BZPOPMIN BZPOPMAX', \
@@ -1279,7 +1279,7 @@ class Redis:
         """
         return self.execute_command('CLIENT INFO')
 
-    def client_list(self, _type=None):
+    def client_list(self, _type=None, client_id=None):
         """
         Returns a list of currently connected clients.
         If type of client specified, only that type will be returned.
@@ -1287,13 +1287,18 @@ class Redis:
          replica, pubsub)
         """
         "Returns a list of currently connected clients"
+        args = []
         if _type is not None:
             client_types = ('normal', 'master', 'replica', 'pubsub')
             if str(_type).lower() not in client_types:
                 raise DataError("CLIENT LIST _type must be one of %r" % (
                                 client_types,))
-            return self.execute_command('CLIENT LIST', b'TYPE', _type)
-        return self.execute_command('CLIENT LIST')
+            args.append(b'TYPE')
+            args.append(_type)
+        if client_id is not None:
+            args.append(b"ID")
+            args.append(client_id)
+        return self.execute_command('CLIENT LIST', *args)
 
     def client_getname(self):
         "Returns the current connection name"
@@ -1853,6 +1858,23 @@ class Redis:
     def keys(self, pattern='*'):
         "Returns a list of keys matching ``pattern``"
         return self.execute_command('KEYS', pattern)
+
+    def lmove(self, first_list, second_list, src="LEFT", dest="RIGHT"):
+        """
+        Atomically returns and removes the first/last element of a list,
+        pushing it as the first/last element on the destination list.
+        Returns the element being popped and pushed.
+        """
+        params = [first_list, second_list, src, dest]
+        return self.execute_command("LMOVE", *params)
+
+    def blmove(self, first_list, second_list, timeout,
+               src="LEFT", dest="RIGHT"):
+        """
+        Blocking version of lmove.
+        """
+        params = [first_list, second_list, src, dest, timeout]
+        return self.execute_command("BLMOVE", *params)
 
     def mget(self, keys, *args):
         """
@@ -2965,17 +2987,35 @@ class Redis:
 
         return self.execute_command('XREVRANGE', name, *pieces)
 
-    def xtrim(self, name, maxlen, approximate=True):
+    def xtrim(self, name, maxlen=None, approximate=True, minid=None,
+              limit=None):
         """
         Trims old messages from a stream.
         name: name of the stream.
         maxlen: truncate old stream messages beyond this size
         approximate: actual stream length may be slightly more than maxlen
+        minin: the minimum id in the stream to query
+        limit: specifies the maximum number of entries to retrieve
         """
-        pieces = [b'MAXLEN']
+        pieces = []
+        if maxlen is not None and minid is not None:
+            raise DataError("Only one of ```maxlen``` or ```minid```",
+                            "may be specified")
+
+        if maxlen is not None:
+            pieces.append(b'MAXLEN')
+        if minid is not None:
+            pieces.append(b'MINID')
         if approximate:
             pieces.append(b'~')
-        pieces.append(maxlen)
+        if maxlen is not None:
+            pieces.append(maxlen)
+        if minid is not None:
+            pieces.append(minid)
+        if limit is not None:
+            pieces.append(b"LIMIT")
+            pieces.append(limit)
+
         return self.execute_command('XTRIM', name, *pieces)
 
     # SORTED SET COMMANDS
@@ -3021,9 +3061,7 @@ class Redis:
             raise DataError("ZADD option 'incr' only works when passing a "
                             "single element/score pair")
         if nx is True and (gt is not None or lt is not None):
-            raise DataError("Only one of 'nx', 'lt', or 'gt' may be defined.")
-        if gt is not None and lt is not None:
-            raise DataError("Only one of 'gt' or 'lt' can be set.")
+            raise DataError("Only one of 'nx', 'lt', or 'gr' may be defined.")
 
         pieces = []
         options = {}
@@ -3380,6 +3418,16 @@ class Redis:
     def zscore(self, name, value):
         "Return the score of element ``value`` in sorted set ``name``"
         return self.execute_command('ZSCORE', name, value)
+
+    def zunion(self, keys, aggregate=None, withscores=False):
+        """
+        Return the union of multiple sorted sets specified by ``keys``.
+        ``keys`` can be provided as dictionary of keys and their weights.
+        Scores will be aggregated based on the ``aggregate``, or SUM if
+        none is provided.
+        """
+        return self._zaggregate('ZUNION', None, keys, aggregate,
+                                withscores=withscores)
 
     def zunionstore(self, dest, keys, aggregate=None):
         """
