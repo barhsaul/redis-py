@@ -1010,7 +1010,7 @@ class ClusterConnection(Connection):
         # Creating new ClusterConnection instance
         self.readonly = kwargs.pop('readonly', False)
         kwargs['parser_class'] = ClusterParser
-        super(ClusterConnection, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
     def on_connect(self):
         '''

@@ -50,6 +50,7 @@ __all__ = [
     'PubSubError',
     'ReadOnlyError',
     'Redis',
+    'RedisCluster',
     'RedisError',
     'ResponseError',
     'SSLConnection',
@@ -57,5 +58,4 @@ __all__ = [
     'TimeoutError',
     'UnixDomainSocketConnection',
     'WatchError',
-    'RedisCluster',
 ]
