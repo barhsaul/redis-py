@@ -1,3 +1,4 @@
+import copy
 import random
 import socket
 import time
@@ -5,7 +6,7 @@ import warnings
 
 from redis.client import Redis
 from redis.commands import ClusterCommands, DataAccessCommands
-from redis.connection import ClusterParser, Encoder
+from redis.connection import ClusterParser, ConnectionPool, Encoder, parse_url
 from redis.crc import key_slot
 from redis.exceptions import (
     AskError,
@@ -23,7 +24,7 @@ from redis.utils import dict_merge, list_keys_to_dict, str_if_bytes
 
 
 def get_node_name(host, port):
-    return f"{host}:{port}"
+    return f'{host}:{port}'
 
 
 def get_connection(redis_node, *args, **options):
@@ -68,7 +69,6 @@ REDIS_ALLOWED_KEYS = (
     "username",
 )
 KWARGS_DISABLED_KEYS = (
-    "decode_responses",
     "host",
     "port",
 )
@@ -122,6 +122,19 @@ READ_COMMANDS = frozenset([
 REDIS_CLUSTER_HASH_SLOTS = 16384
 
 
+def cleanup_kwargs(**kwargs):
+    """
+    Remove unsupported or disabled keys from kwargs
+    """
+    connection_kwargs = {
+        k: v
+        for k, v in kwargs.items()
+        if k in REDIS_ALLOWED_KEYS and k not in KWARGS_DISABLED_KEYS
+    }
+
+    return connection_kwargs
+
+
 class RedisCluster(ClusterCommands, DataAccessCommands, object):
     RedisClusterRequestTTL = 16
     NODES_FLAGS = dict_merge(
@@ -167,15 +180,16 @@ class RedisCluster(ClusterCommands, DataAccessCommands, object):
     )
 
     def __init__(
-        self,
-        host=None,
-        port=7000,
-        startup_nodes=None,
-        cluster_down_retry_attempts=3,
-        skip_full_coverage_check=False,
-        reinitialize_steps=25,
-        read_from_replicas=False,
-        **kwargs,
+            self,
+            host=None,
+            port=7000,
+            startup_nodes=None,
+            cluster_down_retry_attempts=3,
+            skip_full_coverage_check=False,
+            reinitialize_steps=25,
+            read_from_replicas=False,
+            url=None,
+            **kwargs,
     ):
         """
         :startup_nodes:
@@ -199,14 +213,37 @@ class RedisCluster(ClusterCommands, DataAccessCommands, object):
                 - db (Redis do not support database SELECT in cluster mode)
         """
         if "db" in kwargs:
-            # Argument 'db' is not possible to use in cluster mode. Ignoring it
+            # Argument 'db' is not possible to use in cluster mode
             raise RedisClusterException(
                 "Argument 'db' is not possible to use in cluster mode"
             )
+
+        # Get the startup node/s
+        from_url = False
         if not startup_nodes:
             startup_nodes = []
         if host and port:
             startup_nodes.append(ClusterNode(host, port))
+        elif url:
+            from_url = True
+            url_options = parse_url(url)
+            if "path" in url_options:
+                raise RedisClusterException("RedisCluster does not currently support Unix Domain Socket connections")
+            if "db" in url_options and url_options["db"] != 0:
+                # Argument 'db' is not possible to use in cluster mode
+                raise RedisClusterException(
+                    "A ``db`` querystring option can only be 0 in cluster mode"
+                )
+            kwargs.update(url_options)
+            startup_nodes.append(ClusterNode(kwargs['host'], kwargs['port']))
+        if not startup_nodes:
+            raise RedisClusterException("RedisCluster requires at least one node to discover the cluster")
+
+        # Update the connection arguments
+        # Whenever a new connection is established, RedisCluster's on_connect method should be run
+        kwargs.update({"on_redis_connect": self.on_connect})
+        kwargs = cleanup_kwargs(**kwargs)
+
 
         self.encoder = Encoder(
             kwargs.get("encoding", "utf-8"),
@@ -220,26 +257,55 @@ class RedisCluster(ClusterCommands, DataAccessCommands, object):
         self.reinitialize_steps = reinitialize_steps
         self.reset_connections = False
 
-        # Whenever a new connection is established, RedisCluster's on_connect method should be run
-        kwargs.update({"on_redis_connect": self.on_connect})
-        kwargs = self._cleanup_kwargs(**kwargs)
         self.nodes_manager = NodesManager(
             startup_nodes=startup_nodes,
+            from_url=from_url,
             skip_full_coverage_check=skip_full_coverage_check,
             **kwargs,
         )
 
-    def _cleanup_kwargs(self, **kwargs):
+    @classmethod
+    def from_url(cls, url, **kwargs):
         """
-        Remove unsupported or disabled keys from kwargs
-        """
-        connection_kwargs = {
-            k: v
-            for k, v in kwargs.items()
-            if k in REDIS_ALLOWED_KEYS and k not in KWARGS_DISABLED_KEYS
-        }
+        Return a Redis client object configured from the given URL
 
-        return connection_kwargs
+        For example::
+
+            redis://[[username]:[password]]@localhost:6379/0
+            rediss://[[username]:[password]]@localhost:6379/0
+            unix://[[username]:[password]]@/path/to/socket.sock?db=0
+
+        Three URL schemes are supported:
+
+        - `redis://` creates a TCP socket connection. See more at:
+          <https://www.iana.org/assignments/uri-schemes/prov/redis>
+        - `rediss://` creates a SSL wrapped TCP socket connection. See more at:
+          <https://www.iana.org/assignments/uri-schemes/prov/rediss>
+        - ``unix://``: creates a Unix Domain Socket connection.
+
+        The username, password, hostname, path and all querystring values
+        are passed through urllib.parse.unquote in order to replace any
+        percent-encoded values with their corresponding characters.
+
+        There are several ways to specify a database number. The first value
+        found will be used:
+            1. A ``db`` querystring option, e.g. redis://localhost?db=0
+            2. If using the redis:// or rediss:// schemes, the path argument
+               of the url, e.g. redis://localhost/0
+            3. A ``db`` keyword argument to this function.
+
+        If none of these options are specified, the default db=0 is used.
+
+        All querystring options are cast to their appropriate Python types.
+        Boolean arguments can be specified with string values "True"/"False"
+        or "Yes"/"No". Values that cannot be properly cast cause a
+        ``ValueError`` to be raised. Once parsed, the querystring arguments
+        and keyword arguments are passed to the ``ConnectionPool``'s
+        class initializer. In the case of conflicting arguments, querystring
+        arguments always win.
+
+        """
+        return cls(url=url, **kwargs)
 
     def on_connect(self, connection):
         """
@@ -417,7 +483,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands, object):
 
                 redis_node = self.get_redis_connection(target_node)
                 # barshaul: delete the print, for debug purposes
-                print(f"executing {command} command on {target_node.server_type} {target_node.name}")
+                print(f'executing {command} command on {target_node.server_type} {target_node.name}')
                 connection = get_connection(redis_node, *args, **kwargs)
 
                 if asking:
@@ -516,12 +582,12 @@ class ClusterNode(object):
 
         self.host = host
         self.port = port
-        self.name = f"{host}:{port}"
+        self.name = get_node_name(host, port)
         self.server_type = server_type
         self.redis_connection = redis_connection
 
     def __repr__(self):
-        return f"host={self.host},port={self.port},name={self.name},server_type={self.server_type}"
+        return f'host={self.host},port={self.port},name={self.name},server_type={self.server_type}'
 
     def __eq__(self, obj):
         return isinstance(obj, ClusterNode) and obj.name == self.name
@@ -531,6 +597,7 @@ class LoadBalancer:
     """
     Round-Robin Load Balancing
     """
+
     def __init__(self, bucket_size, start_index=0):
         self.slot_to_idx = [start_index] * bucket_size
 
@@ -540,12 +607,14 @@ class LoadBalancer:
         self.slot_to_idx[slot] = (server_index + 1) % list_size
         return server_index
 
+
 class NodesManager:
-    def __init__(self, startup_nodes=None, skip_full_coverage_check=False, **kwargs):
+    def __init__(self, startup_nodes=None, from_url=False, skip_full_coverage_check=False, **kwargs):
         self.nodes_cache = {}
         self.slots_cache = {}
         self.startup_nodes = {}
         self.populate_startup_nodes(startup_nodes)
+        self.from_url = from_url
         self._skip_full_coverage_check = skip_full_coverage_check
         self.reset_connections = False
         self._moved_exception = None
@@ -553,7 +622,7 @@ class NodesManager:
         self.read_load_balancer = None
         # Currently we do not support passing connection classes,
         # we use ClusterConnection by default or SSLClusterConnection for SSL
-        self.initialize(**kwargs)
+        self.initialize()
 
     def update_moved_exception(self, exception):
         self._moved_exception = "exception"
@@ -600,9 +669,9 @@ class NodesManager:
                 node_idx = self.get_read_load_balancer().get_server_index(slot, len(self.slots_cache[slot]))
                 target_node = self.slots_cache[slot][node_idx]
             elif (
-                server_type is None
-                or server_type == PRIMARY
-                or len(self.slots_cache[slot]) == 1
+                    server_type is None
+                    or server_type == PRIMARY
+                    or len(self.slots_cache[slot]) == 1
             ):
                 # return a primary
                 target_node = self.slots_cache[slot][0]
@@ -648,17 +717,17 @@ class NodesManager:
         def node_require_full_coverage(node):
             try:
                 return (
-                    "yes"
-                    in node.redis_connection.config_get(
-                        "cluster-require-full-coverage"
-                    ).values()
+                        "yes"
+                        in node.redis_connection.config_get(
+                    "cluster-require-full-coverage"
+                ).values()
                 )
             except ConnectionError:
                 return False
             except Exception as e:
                 raise RedisClusterException(
                     f'ERROR sending "config get cluster-require-full-coverage" command to redis'
-                    f" server: {node.name}, {e}"
+                    f' server: {node.name}, {e}'
                 )
 
         # at least one node should have cluster-require-full-coverage yes
@@ -666,7 +735,7 @@ class NodesManager:
 
     def check_slots_coverage(self, cluster_nodes, slots_cache):
         if not self._skip_full_coverage_check and self.cluster_require_full_coverage(
-            cluster_nodes
+                cluster_nodes
         ):
             # Validate if all slots are covered or if we should try next
             # startup node
@@ -682,14 +751,30 @@ class NodesManager:
         for node in nodes:
             if node.redis_connection is None or self.reset_connections:
                 # if reset_connections is set to true, create a new connection
-                node.redis_connection = Redis(
+                node.redis_connection = self.create_redis_node(
                     host=node.host,
                     port=node.port,
-                    decode_responses=True,
                     **self.connection_kwargs,
                 )
 
-    def initialize(self, **kwargs):
+    def create_redis_node(self, host, port, **kwargs):
+        if self.from_url:
+            # Create a connection pool
+            kwargs.update({"host": host})
+            kwargs.update({"port": port})
+            connection_pool = ConnectionPool(**kwargs)
+            r = Redis(
+                connection_pool=connection_pool
+            )
+        else:
+            r = Redis(
+                host=host,
+                port=port,
+                **kwargs
+            )
+        return r
+
+    def initialize(self):
         """
         Initializes the nodes cache, slots cache and redis connections.
         :startup_nodes:
@@ -699,19 +784,16 @@ class NodesManager:
         tmp_slots = {}
         disagreements = []
         startup_nodes_reachable = False
-
+        kwargs = self.connection_kwargs
         for startup_node in self.startup_nodes.values():
             try:
                 if startup_node.redis_connection:
                     r = startup_node.redis_connection
                 else:
-                    # Create a new Redis connection
-                    r = Redis(
-                        host=startup_node.host,
-                        port=startup_node.port,
-                        decode_responses=True,
-                        **kwargs,
-                    )
+                    # Create a new Redis connection and let Redis decode the responses so we won't need to handle that
+                    copy_kwargs = copy.deepcopy(kwargs)
+                    copy_kwargs.update({"decode_responses": True})
+                    r = self.create_redis_node(startup_node.host, startup_node.port, **copy_kwargs)
                     self.startup_nodes[startup_node.name].redis_connection = r
                 cluster_slots = r.execute_command("cluster", "slots")
                 startup_nodes_reachable = True
@@ -737,14 +819,13 @@ class NodesManager:
             # If there's only one server in the cluster, its ``host`` is ''
             # Fix it to the host in startup_nodes
             if (
-                len(cluster_slots) == 1
-                and len(cluster_slots[0][2][0]) == 0
-                and len(self.startup_nodes) == 1
+                    len(cluster_slots) == 1
+                    and len(cluster_slots[0][2][0]) == 0
+                    and len(self.startup_nodes) == 1
             ):
                 cluster_slots[0][2][0] = startup_node.host
 
-            # No need to decode response because Redis should handle that for
-            # us...
+
             for slot in cluster_slots:
                 primary_node = slot[2]
                 host = primary_node[0]
@@ -779,7 +860,7 @@ class NodesManager:
                         # setup
                         if tmp_slots[i][0].name != target_node.name:
                             disagreements.append(
-                                f"{tmp_slots[i][0].name} vs {target_node.name} on slot: {i}"
+                                f'{tmp_slots[i][0].name} vs {target_node.name} on slot: {i}'
                             )
 
                             if len(disagreements) > 5:
@@ -797,8 +878,8 @@ class NodesManager:
 
         if not self.check_slots_coverage(tmp_nodes_cache, tmp_slots):
             raise RedisClusterException(
-                f"All slots are not covered after query all startup_nodes. "
-                f"{len(self.slots_cache)} of {REDIS_CLUSTER_HASH_SLOTS} covered..."
+                f'All slots are not covered after query all startup_nodes. '
+                f'{len(self.slots_cache)} of {REDIS_CLUSTER_HASH_SLOTS} covered...'
             )
 
         # Switch the 'reset_connections' flag off if needed
