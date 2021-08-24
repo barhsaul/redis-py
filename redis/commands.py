@@ -2952,9 +2952,18 @@ class ClusterCommands:
     def cluster_bgsave_all(self):
         pass
 
-    def readonly(self, target_nodes):
+    def readonly(self):
         """
-        :target_nodes: Sends to the specified node/s.
+        Enables read queries to all Redis Cluster replica nodes.
         """
-        return self.execute_command('READONLY', target_nodes=target_nodes)
+        self.read_from_replicas = True
+        return self.execute_command('READONLY')
+
+    def readwrite(self):
+        """
+        Disables read queries to all Redis Cluster replica nodes.
+        """
+        # Reset read from replicas flag
+        self.read_from_replicas = False
+        return self.execute_command('READWRITE')
 
