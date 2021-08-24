@@ -5,7 +5,7 @@ import warnings
 
 from redis.client import Redis
 from redis.commands import ClusterCommands, DataAccessCommands
-from redis.connection import ClusterConnection, Encoder, SSLClusterConnection
+from redis.connection import ClusterParser, Encoder
 from redis.crc import key_slot
 from redis.exceptions import (
     AskError,
@@ -19,7 +19,7 @@ from redis.exceptions import (
     TimeoutError,
     TryAgainError,
 )
-from redis.utils import dict_merge, list_keys_to_dict
+from redis.utils import dict_merge, list_keys_to_dict, str_if_bytes
 
 
 def get_node_name(host, port):
@@ -32,9 +32,10 @@ def get_connection(redis_node, *args, **options):
     )
 
 
-PRIMARY = "master"
-REPLICA = "slave"
-ALL_PRIMARIES = "all-masters"
+PRIMARY = "primary"
+REPLICA = "replica"
+ALL_PRIMARIES = "all-primaries"
+ALL_REPLICAS = "all-replicas"
 ALL_NODES = "all-nodes"
 RANDOM = "random"
 SLOT_ID = "slot-id"
@@ -50,6 +51,7 @@ REDIS_ALLOWED_KEYS = (
     "errors",
     "host",
     "max_connections",
+    "on_redis_connect",
     "password",
     "port",
     "retry_on_timeout",
@@ -70,6 +72,51 @@ KWARGS_DISABLED_KEYS = (
     "host",
     "port",
 )
+
+# Not complete, but covers the major ones
+# https://redis.io/commands
+READ_COMMANDS = frozenset([
+    "BITCOUNT",
+    "BITPOS",
+    "EXISTS",
+    "GEODIST",
+    "GEOHASH",
+    "GEOPOS",
+    "GEORADIUS",
+    "GEORADIUSBYMEMBER",
+    "GET",
+    "GETBIT",
+    "GETRANGE",
+    "HEXISTS",
+    "HGET",
+    "HGETALL",
+    "HKEYS",
+    "HLEN",
+    "HMGET",
+    "HSTRLEN",
+    "HVALS",
+    "KEYS",
+    "LINDEX",
+    "LLEN",
+    "LRANGE",
+    "MGET",
+    "PTTL",
+    "RANDOMKEY",
+    "SCARD",
+    "SDIFF",
+    "SINTER",
+    "SISMEMBER",
+    "SMEMBERS",
+    "SRANDMEMBER",
+    "STRLEN",
+    "SUNION",
+    "TTL",
+    "ZCARD",
+    "ZCOUNT",
+    "ZRANGE",
+    "ZSCORE",
+])
+
 # Redis Cluster's key space is divided into 16384 slots.
 # For more information see: https://github.com/redis/redis/issues/2576
 REDIS_CLUSTER_HASH_SLOTS = 16384
@@ -92,6 +139,13 @@ class RedisCluster(ClusterCommands, DataAccessCommands, object):
                 "SCAN",
             ],
             ALL_PRIMARIES,
+        ),
+        list_keys_to_dict(
+            [
+                "READONLY",
+                "READWRITE",
+            ],
+            ALL_REPLICAS,
         ),
         list_keys_to_dict(
             [
@@ -120,6 +174,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands, object):
         cluster_down_retry_attempts=3,
         skip_full_coverage_check=False,
         reinitialize_steps=25,
+        read_from_replicas=False,
         **kwargs,
     ):
         """
@@ -132,6 +187,10 @@ class RedisCluster(ClusterCommands, DataAccessCommands, object):
                 :skip_full_coverage_check:
             Skips the check of cluster-require-full-coverage config, useful for clusters
             without the CONFIG command (like aws)
+       :read_from_replicas:
+            Enable read from replicas in READONLY mode. You can read possibly stale data.
+            When set to true, read commands will be assigned between the primary and its replications in a
+            Round-Robin manner
         :**kwargs:
             Extra arguments that will be sent into Redis instance when created
             (See Official redis-py doc for supported kwargs
@@ -149,24 +208,20 @@ class RedisCluster(ClusterCommands, DataAccessCommands, object):
         if host and port:
             startup_nodes.append(ClusterNode(host, port))
 
-        self.reinitialize_counter = 0
-        self.reinitialize_steps = reinitialize_steps
-        self.refresh_table_asap = False
-        self.reset_connections = False
-        self.cluster_down_retry_attempts = cluster_down_retry_attempts
-        self.nodes_flags = self.__class__.NODES_FLAGS.copy()
         self.encoder = Encoder(
             kwargs.get("encoding", "utf-8"),
             kwargs.get("encoding_errors", "strict"),
             kwargs.get("decode_responses", False),
         )
-        # Currently we do not support passing connection classes,
-        # we use ClusterConnection by default or SSLClusterConnection for SSL
-        if kwargs.pop("ssl", False):
-            connection_class = SSLClusterConnection
-        else:
-            connection_class = ClusterConnection
-        kwargs.update({"connection_class": connection_class})
+        self.cluster_down_retry_attempts = cluster_down_retry_attempts
+        self.nodes_flags = self.__class__.NODES_FLAGS.copy()
+        self.read_from_replicas = read_from_replicas
+        self.reinitialize_counter = 0
+        self.reinitialize_steps = reinitialize_steps
+        self.reset_connections = False
+
+        # Whenever a new connection is established, RedisCluster's on_connect method should be run
+        kwargs.update({"on_redis_connect": self.on_connect})
         kwargs = self._cleanup_kwargs(**kwargs)
         self.nodes_manager = NodesManager(
             startup_nodes=startup_nodes,
@@ -185,6 +240,24 @@ class RedisCluster(ClusterCommands, DataAccessCommands, object):
         }
 
         return connection_kwargs
+
+    def on_connect(self, connection):
+        """
+        Initialize the connection, authenticate and select a database and send READONLY if it is
+        set during object initialization.
+        """
+        connection.set_parser_class(ClusterParser)
+        connection.on_connect()
+
+        if self.read_from_replicas:
+            # Sending READONLY command to server to configure connection as readonly.
+            # Since each cluster node may change its server type due to a failover, we should establish a READONLY
+            # connection regardless of the server type. If this is a primary connection, READONLY would not affect
+            # executing write commands.
+            connection.send_command('READONLY')
+
+            if str_if_bytes(connection.read_response()) != 'OK':
+                raise ConnectionError('READONLY command failed')
 
     def get_redis_connection(self, node):
         if not node.redis_connection:
@@ -225,12 +298,14 @@ class RedisCluster(ClusterCommands, DataAccessCommands, object):
             return [self.get_random_node()]
         elif node_flag == ALL_PRIMARIES:
             return self.get_all_primaries()
+        elif node_flag == ALL_REPLICAS:
+            return self.get_all_replicas()
         elif node_flag == ALL_NODES:
             return self.get_all_nodes()
         else:
             # get the node that holds the key's slot
             slot = self.determine_slot(*args)
-            return [self.nodes_manager.get_node_from_slot(slot)]
+            return [self.nodes_manager.get_node_from_slot(slot, self.read_from_replicas and command in READ_COMMANDS)]
 
     def _increment_reinitialize_counter(self, count=1):
         # In order not to reinitialize the cluster, the user can set
@@ -337,10 +412,12 @@ class RedisCluster(ClusterCommands, DataAccessCommands, object):
                     # MOVED occurred and the cache was updated, refresh the
                     # target node
                     slot = self.determine_slot(*args)
-                    target_node = self.nodes_manager.get_node_from_slot(slot)
+                    target_node = self.nodes_manager.get_node_from_slot(slot, self.read_from_replicas)
                     updated_cache = False
 
                 redis_node = self.get_redis_connection(target_node)
+                # barshaul: delete the print, for debug purposes
+                print(f"executing {command} command on {target_node.server_type} {target_node.name}")
                 connection = get_connection(redis_node, *args, **kwargs)
 
                 if asking:
@@ -450,6 +527,19 @@ class ClusterNode(object):
         return isinstance(obj, ClusterNode) and obj.name == self.name
 
 
+class LoadBalancer:
+    """
+    Round-Robin Load Balancing
+    """
+    def __init__(self, bucket_size, start_index=0):
+        self.slot_to_idx = [start_index] * bucket_size
+
+    def get_server_index(self, slot, list_size):
+        server_index = self.slot_to_idx[slot]
+        # Update the index
+        self.slot_to_idx[slot] = (server_index + 1) % list_size
+        return server_index
+
 class NodesManager:
     def __init__(self, startup_nodes=None, skip_full_coverage_check=False, **kwargs):
         self.nodes_cache = {}
@@ -460,6 +550,7 @@ class NodesManager:
         self.reset_connections = False
         self._moved_exception = None
         self.connection_kwargs = kwargs
+        self.read_load_balancer = None
         # Currently we do not support passing connection classes,
         # we use ClusterConnection by default or SSLClusterConnection for SSL
         self.initialize(**kwargs)
@@ -497,12 +588,18 @@ class NodesManager:
         # Reset moved_exception
         self._moved_exception = None
 
-    def get_node_from_slot(self, slot, server_type=None):
-        """ """
+    def get_node_from_slot(self, slot, read_from_replicas=False, server_type=None):
+        """
+        Gets a node that servers this hash slot
+        """
         try:
             if self._moved_exception:
                 self._update_moved_slots()
-            if (
+            if read_from_replicas:
+                # get the server index in a Round-Robin manner
+                node_idx = self.get_read_load_balancer().get_server_index(slot, len(self.slots_cache[slot]))
+                target_node = self.slots_cache[slot][node_idx]
+            elif (
                 server_type is None
                 or server_type == PRIMARY
                 or len(self.slots_cache[slot]) == 1
@@ -528,6 +625,11 @@ class NodesManager:
             for node in self.nodes_cache.values()
             if node.server_type == server_type
         ]
+
+    def get_read_load_balancer(self):
+        if not self.read_load_balancer:
+            self.read_load_balancer = LoadBalancer(REDIS_CLUSTER_HASH_SLOTS)
+        return self.read_load_balancer
 
     def populate_startup_nodes(self, nodes):
         """
@@ -658,6 +760,7 @@ class NodesManager:
 
                 for i in range(int(slot[0]), int(slot[1]) + 1):
                     if i not in tmp_slots:
+                        tmp_slots[i] = [target_node]
                         tmp_slots[i] = [target_node]
                         replica_nodes = [slot[j] for j in range(3, len(slot))]
 

@@ -527,7 +527,7 @@ class Connection:
                  encoding_errors='strict', decode_responses=False,
                  parser_class=DefaultParser, socket_read_size=65536,
                  health_check_interval=0, client_name=None, username=None,
-                 retry=None):
+                 retry=None, on_redis_connect=None):
         """
         Initialize a new Connection.
         To specify a retry policy, first set `retry_on_timeout` to `True`
@@ -557,10 +557,12 @@ class Connection:
         self.health_check_interval = health_check_interval
         self.next_health_check = 0
         self.encoder = Encoder(encoding, encoding_errors, decode_responses)
+        self.on_redis_connect = on_redis_connect
         self._sock = None
         self._parser = parser_class(socket_read_size=socket_read_size)
         self._connect_callbacks = []
         self._buffer_cutoff = 6000
+        self._socket_read_size = socket_read_size
 
     def __repr__(self):
         repr_args = ','.join(['%s=%s' % (k, v) for k, v in self.repr_pieces()])
@@ -588,6 +590,9 @@ class Connection:
     def clear_connect_callbacks(self):
         self._connect_callbacks = []
 
+    def set_parser_class(self, parser_class):
+        self._parser = parser_class(socket_read_size=self._socket_read_size)
+
     def connect(self):
         "Connects to the Redis server if not already connected"
         if self._sock:
@@ -601,7 +606,12 @@ class Connection:
 
         self._sock = sock
         try:
-            self.on_connect()
+            if self.on_redis_connect:
+                # Use the on_redis_connect function pointer if it was passed
+                self.on_redis_connect(self)
+            else:
+                # Use the default on_connect function
+                self.on_connect()
         except RedisError:
             # clean up after any error in on_connect
             self.disconnect()
