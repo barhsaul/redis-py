@@ -19,5 +19,5 @@ def key_slot(key, bucket):
     if start > -1:
         end = key.find(b"}", start + 1)
         if end > -1 and end != start + 1:
-            k = key[start + 1: end]
+            key = key[start + 1: end]
     return crc16(key) % bucket
