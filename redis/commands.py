@@ -292,7 +292,7 @@ class ManagementCommands:
             client_types = ('normal', 'master', 'slave', 'pubsub')
             if str(_type).lower() not in client_types:
                 raise DataError("CLIENT KILL type must be one of %r" % (
-                                client_types,))
+                    client_types,))
             args.extend((b'TYPE', _type))
         if skipme is not None:
             if not isinstance(skipme, bool):
@@ -332,7 +332,7 @@ class ManagementCommands:
             client_types = ('normal', 'master', 'replica', 'pubsub')
             if str(_type).lower() not in client_types:
                 raise DataError("CLIENT LIST _type must be one of %r" % (
-                                client_types,))
+                    client_types,))
             args.append(b'TYPE')
             args.append(_type)
         if client_id is not None:
@@ -714,6 +714,7 @@ class BasicKeyCommands:
     def exists(self, *names):
         "Returns the number of ``names`` that exist"
         return self.execute_command('EXISTS', *names)
+
     __contains__ = exists
 
     def expire(self, name, time):
@@ -2853,7 +2854,7 @@ class GeoCommands:
         elif kwargs['unit']:
             pieces.append(kwargs['unit'])
         else:
-            pieces.append('m',)
+            pieces.append('m', )
 
         for arg_name, byte_repr in (
                 ('withdist', b'WITHDIST'),
@@ -2949,6 +2950,7 @@ class BitFieldOperation:
     """
     Command builder for BITFIELD commands.
     """
+
     def __init__(self, client, key, default_overflow=None):
         self.client = client
         self.key = key
@@ -3137,8 +3139,10 @@ class SentinelCommands:
         """
         return self.execute_command('SENTINEL FLUSHCONFIG')
 
+
 class DataAccessCommands(BasicKeyCommands, ListCommands,
-                         ScanCommands, SetCommands, StreamsCommands, SortedSetCommands,
+                         ScanCommands, SetCommands, StreamsCommands,
+                         SortedSetCommands,
                          HyperLogLogCommands, HashCommands, GeoCommands,
                          ):
     """
@@ -3162,7 +3166,8 @@ class ClusterCommands:
 
         Sends to specified node
         """
-        return self.execute_command('CLUSTER ADDSLOTS', *slots, node_id=node_id)
+        return self.execute_command('CLUSTER ADDSLOTS', *slots,
+                                    node_id=node_id)
 
     def cluster_countkeysinslot(self, slot_id):
         """
@@ -3178,7 +3183,8 @@ class ClusterCommands:
 
         Sends to specified node
         """
-        return self.execute_command('CLUSTER COUNT-FAILURE-REPORTS', node_id=node_id)
+        return self.execute_command('CLUSTER COUNT-FAILURE-REPORTS',
+                                    node_id=node_id)
 
     def cluster_delslots(self, *slots):
         """
@@ -3190,7 +3196,8 @@ class ClusterCommands:
         cluster_nodes = self._nodes_slots_to_slots_nodes(self.cluster_nodes())
 
         return [
-            self.execute_command('CLUSTER DELSLOTS', slot, node_id=cluster_nodes[slot])
+            self.execute_command('CLUSTER DELSLOTS', slot,
+                                 node_id=cluster_nodes[slot])
             for slot in slots
         ]
 
@@ -3202,9 +3209,12 @@ class ClusterCommands:
         """
         if option:
             if option.upper() not in ['FORCE', 'TAKEOVER']:
-                raise RedisError('Invalid option for CLUSTER FAILOVER command: {0}'.format(option))
+                raise RedisError(
+                    'Invalid option for CLUSTER FAILOVER command: {0}'.format(
+                        option))
             else:
-                return self.execute_command('CLUSTER FAILOVER', option, node_id=node_id)
+                return self.execute_command('CLUSTER FAILOVER', option,
+                                            node_id=node_id)
         else:
             return self.execute_command('CLUSTER FAILOVER', node_id=node_id)
 
@@ -3230,7 +3240,8 @@ class ClusterCommands:
 
         Sends to specified node
         """
-        return self.execute_command('CLUSTER MEET', host, port, node_id=node_id)
+        return self.execute_command('CLUSTER MEET', host, port,
+                                    node_id=node_id)
 
     def cluster_nodes(self):
         """
@@ -3246,7 +3257,8 @@ class ClusterCommands:
 
         :target_nodes: Sends to the specified node/s.
         """
-        return self.execute_command('CLUSTER REPLICATE', node_id, target_nodes=target_nodes)
+        return self.execute_command('CLUSTER REPLICATE', node_id,
+                                    target_nodes=target_nodes)
 
     def cluster_reset(self, target_nodes, node_id, soft=True):
         """
@@ -3257,7 +3269,9 @@ class ClusterCommands:
 
         :target_nodes: Sends to the specified node/s.
         """
-        return self.execute_command('CLUSTER RESET', b'SOFT' if soft else b'HARD', target_nodes=target_nodes)
+        return self.execute_command('CLUSTER RESET',
+                                    b'SOFT' if soft else b'HARD',
+                                    target_nodes=target_nodes)
 
     def cluster_reset_all_nodes(self, soft=True):
         """
@@ -3283,7 +3297,8 @@ class ClusterCommands:
 
         :target_nodes: Sends to the specified node/s.
         """
-        return self.execute_command('CLUSTER SAVECONFIG', target_nodes=target_nodes)
+        return self.execute_command('CLUSTER SAVECONFIG',
+                                    target_nodes=target_nodes)
 
     def cluster_get_keys_in_slot(self, slot, num_keys):
         """
@@ -3297,7 +3312,8 @@ class ClusterCommands:
 
         :target_nodes: Sends to the specified node/s.
         """
-        return self.execute_command('CLUSTER SET-CONFIG-EPOCH', epoch, target_nodes=target_nodes)
+        return self.execute_command('CLUSTER SET-CONFIG-EPOCH', epoch,
+                                    target_nodes=target_nodes)
 
     def cluster_setslot(self, node_id, slot_id, state, target_nodes=None):
         """
@@ -3306,12 +3322,17 @@ class ClusterCommands:
         :target_nodes: Sends to the specified node/s.
         """
         if state.upper() == 'MIGRATING' and node_id is not None:
-            return self.execute_command('CLUSTER SETSLOT', slot_id, state, node_id)
-        elif state.upper() in ('IMPORTING', 'NODE') and node_id is not None :
+            return self.execute_command('CLUSTER SETSLOT', slot_id, state,
+                                        node_id)
+        elif state.upper() in ('IMPORTING', 'NODE') and node_id is not None:
             if target_nodes is None:
-                raise RedisError('Please specify the target node name to operate "{0}" command on, e.g. target_nodes="127.0.0.1:6379"'.format(state.upper()))
+                raise RedisError(
+                    'Please specify the target node name to operate "{0}" '
+                    'command on, e.g. target_nodes="127.0.0.1:6379"'
+                    .format(state.upper()))
             else:
-                return self.execute_command('CLUSTER SETSLOT', slot_id, state, node_id, target_nodes=target_nodes)
+                return self.execute_command('CLUSTER SETSLOT', slot_id, state,
+                                            node_id, target_nodes=target_nodes)
         elif state.upper() == 'STABLE':
             return self.execute_command('CLUSTER SETSLOT', slot_id, 'STABLE')
         else:
@@ -3319,7 +3340,8 @@ class ClusterCommands:
 
     def cluster_replicas(self, node_id):
         """
-        Provides a list of replica nodes replicating from the specified primary target node
+        Provides a list of replica nodes replicating from the specified primary
+        target node
         """
         return self.execute_command('CLUSTER REPLICAS', node_id)
 
@@ -3348,4 +3370,3 @@ class ClusterCommands:
         # Reset read from replicas flag
         self.read_from_replicas = False
         return self.execute_command('READWRITE')
-
