@@ -24,7 +24,7 @@ from redis.utils import dict_merge, list_keys_to_dict, str_if_bytes
 
 
 def get_node_name(host, port):
-    return f'{host}:{port}'
+    return '{0}:{1}'.format(host, port)
 
 
 def get_connection(redis_node, *args, **options):
@@ -189,7 +189,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands, object):
             reinitialize_steps=25,
             read_from_replicas=False,
             url=None,
-            **kwargs,
+            **kwargs
     ):
         """
         :startup_nodes:
@@ -483,7 +483,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands, object):
 
                 redis_node = self.get_redis_connection(target_node)
                 # barshaul: delete the print, for debug purposes
-                print(f'executing {command} command on {target_node.server_type} {target_node.name}')
+                print('executing {0} command on {1} {2}'.format(command, target_node.server_type, target_node.name))
                 connection = get_connection(redis_node, *args, **kwargs)
 
                 if asking:
@@ -587,7 +587,7 @@ class ClusterNode(object):
         self.redis_connection = redis_connection
 
     def __repr__(self):
-        return f'host={self.host},port={self.port},name={self.name},server_type={self.server_type}'
+        return 'host={0},port={1},name={2},server_type={3}'.format(self.host, self.port, self.name, self.server_type)
 
     def __eq__(self, obj):
         return isinstance(obj, ClusterNode) and obj.name == self.name
@@ -683,8 +683,8 @@ class NodesManager:
             return target_node
         except KeyError:
             raise SlotNotCoveredError(
-                f'Slot "{slot}" not covered by the cluster. '
-                f'"skip_full_coverage_check={self._skip_full_coverage_check}"'
+                'Slot "{0}" not covered by the cluster. '
+                '"skip_full_coverage_check={1}"'.format(slot, self._skip_full_coverage_check)
             )
 
     def get_nodes_by_server_type(self, server_type):
@@ -726,8 +726,8 @@ class NodesManager:
                 return False
             except Exception as e:
                 raise RedisClusterException(
-                    f'ERROR sending "config get cluster-require-full-coverage" command to redis'
-                    f' server: {node.name}, {e}'
+                    'ERROR sending "config get cluster-require-full-coverage"'
+                    ' command to redis server: {0}, {1}'.format(node.name, e)
                 )
 
         # at least one node should have cluster-require-full-coverage yes
@@ -809,11 +809,11 @@ class NodesManager:
                     continue
                 else:
                     raise RedisClusterException(
-                        f'ERROR sending "cluster slots" command to redis server: {startup_node}'
+                        'ERROR sending "cluster slots" command to redis server: {0}'.format(startup_node)
                     )
             except Exception:
                 raise RedisClusterException(
-                    f'ERROR sending "cluster slots" command to redis server: {startup_node}'
+                    'ERROR sending "cluster slots" command to redis server: {0}'.format(startup_node)
                 )
 
             # If there's only one server in the cluster, its ``host`` is ''
@@ -860,12 +860,13 @@ class NodesManager:
                         # setup
                         if tmp_slots[i][0].name != target_node.name:
                             disagreements.append(
-                                f'{tmp_slots[i][0].name} vs {target_node.name} on slot: {i}'
+                                '{0} vs {1} on slot: {2}'.format(tmp_slots[i][0].name, target_node.name, i)
                             )
 
                             if len(disagreements) > 5:
                                 raise RedisClusterException(
-                                    f'startup_nodes could not agree on a valid slots cache: {", ".join(disagreements)}'
+                                    'startup_nodes could not agree on a valid'
+                                    ' slots cache: {0}'.format(", ".join(disagreements))
                                 )
 
         if not startup_nodes_reachable:
@@ -878,8 +879,8 @@ class NodesManager:
 
         if not self.check_slots_coverage(tmp_nodes_cache, tmp_slots):
             raise RedisClusterException(
-                f'All slots are not covered after query all startup_nodes. '
-                f'{len(self.slots_cache)} of {REDIS_CLUSTER_HASH_SLOTS} covered...'
+                'All slots are not covered after query all startup_nodes.'
+                ' {0} of {1} covered...'.format(len(self.slots_cache), REDIS_CLUSTER_HASH_SLOTS)
             )
 
         # Switch the 'reset_connections' flag off if needed
