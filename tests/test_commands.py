@@ -499,6 +499,35 @@ class TestRedisCommands:
         assert isinstance(slowlog[0]['start_time'], int)
         assert isinstance(slowlog[0]['duration'], int)
 
+        # Mock result if we didn't get slowlog complexity info.
+        if 'complexity' not in slowlog[0]:
+            # monkey patch parse_response()
+            COMPLEXITY_STATEMENT = "Complexity info: N:4712,M:3788"
+            old_parse_response = r.parse_response
+
+            def parse_response(connection, command_name, **options):
+                if command_name != 'SLOWLOG GET':
+                    return old_parse_response(connection,
+                                              command_name,
+                                              **options)
+                responses = connection.read_response()
+                for response in responses:
+                    # Complexity info stored as fourth item in list
+                    response.insert(3, COMPLEXITY_STATEMENT)
+                return r.response_callbacks[command_name](responses, **options)
+            r.parse_response = parse_response
+
+            # test
+            slowlog = r.slowlog_get()
+            assert isinstance(slowlog, list)
+            commands = [log['command'] for log in slowlog]
+            assert get_command in commands
+            idx = commands.index(get_command)
+            assert slowlog[idx]['complexity'] == COMPLEXITY_STATEMENT
+
+            # tear down monkeypatch
+            r.parse_response = old_parse_response
+
     def test_slowlog_get_limit(self, r, slowlog):
         assert r.slowlog_reset()
         r.get('foo')
@@ -1051,6 +1080,49 @@ class TestRedisCommands:
         r['a'] = 'abcdefghijh'
         assert r.setrange('a', 6, '12345') == 11
         assert r['a'] == b'abcdef12345'
+
+    @skip_if_server_version_lt('6.0.0')
+    def test_stralgo_lcs(self, r):
+        key1 = 'key1'
+        key2 = 'key2'
+        value1 = 'ohmytext'
+        value2 = 'mynewtext'
+        res = 'mytext'
+        # test LCS of strings
+        assert r.stralgo('LCS', value1, value2) == res
+        # test using keys
+        r.mset({key1: value1, key2: value2})
+        assert r.stralgo('LCS', key1, key2, specific_argument="keys") == res
+        # test other labels
+        assert r.stralgo('LCS', value1, value2, len=True) == len(res)
+        assert r.stralgo('LCS', value1, value2, idx=True) == \
+               {
+                   'len': len(res),
+                   'matches': [[(4, 7), (5, 8)], [(2, 3), (0, 1)]]
+               }
+        assert r.stralgo('LCS', value1, value2,
+                         idx=True, withmatchlen=True) == \
+               {
+                   'len': len(res),
+                   'matches': [[4, (4, 7), (5, 8)], [2, (2, 3), (0, 1)]]
+               }
+        assert r.stralgo('LCS', value1, value2,
+                         idx=True, minmatchlen=4, withmatchlen=True) == \
+               {
+                   'len': len(res),
+                   'matches': [[4, (4, 7), (5, 8)]]
+               }
+
+    @skip_if_server_version_lt('6.0.0')
+    def test_stralgo_negative(self, r):
+        with pytest.raises(exceptions.DataError):
+            r.stralgo('ISSUB', 'value1', 'value2')
+        with pytest.raises(exceptions.DataError):
+            r.stralgo('LCS', 'value1', 'value2', len=True, idx=True)
+        with pytest.raises(exceptions.DataError):
+            r.stralgo('LCS', 'value1', 'value2', specific_argument="INT")
+        with pytest.raises(ValueError):
+            r.stralgo('LCS', 'value1', 'value2', idx=True, minmatchlen="one")
 
     def test_strlen(self, r):
         r['a'] = 'foo'
@@ -1865,6 +1937,17 @@ class TestRedisCommands:
         assert r.zrange('d', 0, -1, withscores=True) == \
             [(b'a2', 5), (b'a4', 12), (b'a3', 20), (b'a1', 23)]
 
+    @skip_if_server_version_lt('6.1.240')
+    def test_zmscore(self, r):
+        with pytest.raises(exceptions.DataError):
+            r.zmscore('invalid_key', [])
+
+        assert r.zmscore('invalid_key', ['invalid_member']) == [None]
+
+        r.zadd('a', {'a1': 1, 'a2': 2, 'a3': 3.5})
+        assert r.zmscore('a', ['a1', 'a2', 'a3', 'a4']) == \
+            [1.0, 2.0, 3.5, None]
+
     # HYPERLOGLOG TESTS
     @skip_if_server_version_lt('2.8.9')
     def test_pfadd(self, r):
@@ -2421,6 +2504,56 @@ class TestRedisCommands:
         assert r.xlen(stream) == 2
         r.xadd(stream, {'some': 'other'}, nomkstream=True)
         assert r.xlen(stream) == 3
+
+    @skip_if_server_version_lt('6.2.0')
+    def test_xadd_minlen_and_limit(self, r):
+        stream = 'stream'
+
+        r.xadd(stream, {'foo': 'bar'})
+        r.xadd(stream, {'foo': 'bar'})
+        r.xadd(stream, {'foo': 'bar'})
+        r.xadd(stream, {'foo': 'bar'})
+
+        # Future self: No limits without approximate, according to the api
+        with pytest.raises(redis.ResponseError):
+            assert r.xadd(stream, {'foo': 'bar'}, maxlen=3,
+                          approximate=False, limit=2)
+
+        # limit can not be provided without maxlen or minid
+        with pytest.raises(redis.ResponseError):
+            assert r.xadd(stream, {'foo': 'bar'}, limit=2)
+
+        # maxlen with a limit
+        assert r.xadd(stream, {'foo': 'bar'}, maxlen=3,
+                      approximate=True, limit=2)
+        r.delete(stream)
+
+        # maxlen and minid can not be provided together
+        with pytest.raises(redis.DataError):
+            assert r.xadd(stream, {'foo': 'bar'}, maxlen=3,
+                          minid="sometestvalue")
+
+        # minid with a limit
+        m1 = r.xadd(stream, {'foo': 'bar'})
+        r.xadd(stream, {'foo': 'bar'})
+        r.xadd(stream, {'foo': 'bar'})
+        r.xadd(stream, {'foo': 'bar'})
+        assert r.xadd(stream, {'foo': 'bar'}, approximate=True,
+                      minid=m1, limit=3)
+
+        # pure minid
+        r.xadd(stream, {'foo': 'bar'})
+        r.xadd(stream, {'foo': 'bar'})
+        r.xadd(stream, {'foo': 'bar'})
+        m4 = r.xadd(stream, {'foo': 'bar'})
+        assert r.xadd(stream, {'foo': 'bar'}, approximate=False, minid=m4)
+
+        # minid approximate
+        r.xadd(stream, {'foo': 'bar'})
+        r.xadd(stream, {'foo': 'bar'})
+        m3 = r.xadd(stream, {'foo': 'bar'})
+        r.xadd(stream, {'foo': 'bar'})
+        assert r.xadd(stream, {'foo': 'bar'}, approximate=True, minid=m3)
 
     @skip_if_server_version_lt('6.2.0')
     def test_xautoclaim(self, r):

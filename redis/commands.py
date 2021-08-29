@@ -1023,6 +1023,53 @@ class BasicKeyCommands:
         """
         return self.execute_command('SETRANGE', name, offset, value)
 
+    def stralgo(self, algo, value1, value2, specific_argument='strings',
+                len=False, idx=False, minmatchlen=None, withmatchlen=False):
+        """
+        Implements complex algorithms that operate on strings.
+        Right now the only algorithm implemented is the LCS algorithm
+        (longest common substring). However new algorithms could be
+        implemented in the future.
+
+        ``algo`` Right now must be LCS
+        ``value1`` and ``value2`` Can be two strings or two keys
+        ``specific_argument`` Specifying if the arguments to the algorithm
+        will be keys or strings. strings is the default.
+        ``len`` Returns just the len of the match.
+        ``idx`` Returns the match positions in each string.
+        ``minmatchlen`` Restrict the list of matches to the ones of a given
+        minimal length. Can be provided only when ``idx`` set to True.
+        ``withmatchlen`` Returns the matches with the len of the match.
+        Can be provided only when ``idx`` set to True.
+        """
+        # check validity
+        supported_algo = ['LCS']
+        if algo not in supported_algo:
+            raise DataError("The supported algorithms are: %s"
+                            % (', '.join(supported_algo)))
+        if specific_argument not in ['keys', 'strings']:
+            raise DataError("specific_argument can be only"
+                            " keys or strings")
+        if len and idx:
+            raise DataError("len and idx cannot be provided together.")
+
+        pieces = [algo, specific_argument.upper(), value1, value2]
+        if len:
+            pieces.append(b'LEN')
+        if idx:
+            pieces.append(b'IDX')
+        try:
+            int(minmatchlen)
+            pieces.extend([b'MINMATCHLEN', minmatchlen])
+        except TypeError:
+            pass
+        if withmatchlen:
+            pieces.append(b'WITHMATCHLEN')
+
+        return self.execute_command('STRALGO', *pieces, len=len, idx=idx,
+                                    minmatchlen=minmatchlen,
+                                    withmatchlen=withmatchlen)
+
     def strlen(self, name):
         "Return the number of bytes stored in the value of ``name``"
         return self.execute_command('STRLEN', name)
@@ -1511,17 +1558,25 @@ class StreamsCommands:
         return self.execute_command('XACK', name, groupname, *ids)
 
     def xadd(self, name, fields, id='*', maxlen=None, approximate=True,
-             nomkstream=False):
+             nomkstream=False, minid=None, limit=None):
         """
         Add to a stream.
         name: name of the stream
         fields: dict of field/value pairs to insert into the stream
         id: Location to insert this record. By default it is appended.
-        maxlen: truncate old stream members beyond this size
+        maxlen: truncate old stream members beyond this size.
+        Can't be specify with minid.
+        minid: the minimum id in the stream to query.
+        Can't be specify with maxlen.
         approximate: actual stream length may be slightly more than maxlen
         nomkstream: When set to true, do not make a stream
+        limit: specifies the maximum number of entries to retrieve
         """
         pieces = []
+        if maxlen is not None and minid is not None:
+            raise DataError("Only one of ```maxlen``` or ```minid```",
+                            "may be specified")
+
         if maxlen is not None:
             if not isinstance(maxlen, int) or maxlen < 1:
                 raise DataError('XADD maxlen must be a positive integer')
@@ -1529,6 +1584,14 @@ class StreamsCommands:
             if approximate:
                 pieces.append(b'~')
             pieces.append(str(maxlen))
+        if minid is not None:
+            pieces.append(b'MINID')
+            if approximate:
+                pieces.append(b'~')
+            pieces.append(minid)
+        if limit is not None:
+            pieces.append(b"LIMIT")
+            pieces.append(limit)
         if nomkstream:
             pieces.append(b'NOMKSTREAM')
         pieces.append(id)
@@ -1818,6 +1881,8 @@ class StreamsCommands:
         name: name of the stream.
         maxlen: truncate old stream messages beyond this size
         approximate: actual stream length may be slightly more than maxlen
+        minid: the minimum id in the stream to query
+        limit: specifies the maximum number of entries to retrieve
         """
         pieces = [b'MAXLEN']
         if approximate:
@@ -2206,6 +2271,20 @@ class SortedSetCommands:
         aggregated based on the ``aggregate``, or SUM if none is provided.
         """
         return self._zaggregate('ZUNIONSTORE', dest, keys, aggregate)
+
+    def zmscore(self, key, members):
+        """
+        Returns the scores associated with the specified members
+        in the sorted set stored at key.
+        ``members`` should be a list of the member name.
+        Return type is a list of score.
+        If the member does not exist, a None will be returned
+        in corresponding position.
+        """
+        if not members:
+            raise DataError('ZMSCORE members must be a non-empty list')
+        pieces = [key] + members
+        return self.execute_command('ZMSCORE', *pieces)
 
     def _zaggregate(self, command, dest, keys, aggregate=None,
                     **options):
@@ -2711,7 +2790,7 @@ class BitFieldOperation:
         return self.client.execute_command(*command)
 
 
-class SentinalCommands:
+class SentinelCommands:
     """
     A class containing the commands specific to redis sentinal. This class is
     to be used as a mixin.
@@ -2755,6 +2834,56 @@ class SentinalCommands:
         "Returns a list of slaves for ``service_name``"
         return self.execute_command('SENTINEL SLAVES', service_name)
 
+    def sentinel_reset(self, pattern):
+        """
+        This command will reset all the masters with matching name.
+        The pattern argument is a glob-style pattern.
+
+        The reset process clears any previous state in a master (including a
+        failover in progress), and removes every slave and sentinel already
+        discovered and associated with the master.
+        """
+        return self.execute_command('SENTINEL RESET', pattern, once=True)
+
+    def sentinel_failover(self, new_master_name):
+        """
+        Force a failover as if the master was not reachable, and without
+        asking for agreement to other Sentinels (however a new version of the
+        configuration will be published so that the other Sentinels will
+        update their configurations).
+        """
+        return self.execute_command('SENTINEL FAILOVER', new_master_name)
+
+    def sentinel_ckquorum(self, new_master_name):
+        """
+        Check if the current Sentinel configuration is able to reach the
+        quorum needed to failover a master, and the majority needed to
+        authorize the failover.
+
+        This command should be used in monitoring systems to check if a
+        Sentinel deployment is ok.
+        """
+        return self.execute_command('SENTINEL CKQUORUM',
+                                    new_master_name,
+                                    once=True)
+
+    def sentinel_flushconfig(self):
+        """
+        Force Sentinel to rewrite its configuration on disk, including the
+        current Sentinel state.
+
+        Normally Sentinel rewrites the configuration every time something
+        changes in its state (in the context of the subset of the state which
+        is persisted on disk across restart).
+        However sometimes it is possible that the configuration file is lost
+        because of operation errors, disk failures, package upgrade scripts or
+        configuration managers. In those cases a way to to force Sentinel to
+        rewrite the configuration file is handy.
+
+        This command works even if the previous configuration file is
+        completely missing.
+        """
+        return self.execute_command('SENTINEL FLUSHCONFIG')
 
 class DataAccessCommands(BasicKeyCommands, ListCommands,
                          ScanCommands, SetCommands, StreamsCommands, SortedSetCommands,

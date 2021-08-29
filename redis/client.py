@@ -390,19 +390,58 @@ def parse_zscan(response, **options):
     return int(cursor), list(zip(it, map(score_cast_func, it)))
 
 
+def parse_zmscore(response, **options):
+    # zmscore: list of scores (double precision floating point number) or nil
+    return [float(score) if score is not None else None for score in response]
+
+
 def parse_slowlog_get(response, **options):
     space = ' ' if options.get('decode_responses', False) else b' '
-    return [{
-        'id': item[0],
-        'start_time': int(item[1]),
-        'duration': int(item[2]),
-        'command':
-            # Redis Enterprise injects another entry at index [3], which has
-            # the complexity info (i.e. the value N in case the command has
-            # an O(N) complexity) instead of the command.
-            space.join(item[3]) if isinstance(item[3], list) else
-            space.join(item[4])
-    } for item in response]
+
+    def parse_item(item):
+        result = {
+            'id': item[0],
+            'start_time': int(item[1]),
+            'duration': int(item[2]),
+        }
+        # Redis Enterprise injects another entry at index [3], which has
+        # the complexity info (i.e. the value N in case the command has
+        # an O(N) complexity) instead of the command.
+        if isinstance(item[3], list):
+            result['command'] = space.join(item[3])
+        else:
+            result['complexity'] = item[3]
+            result['command'] = space.join(item[4])
+        return result
+    return [parse_item(item) for item in response]
+
+
+def parse_stralgo(response, **options):
+    """
+    Parse the response from `STRALGO` command.
+    Without modifiers the returned value is string.
+    When LEN is given the command returns the length of the result
+    (i.e integer).
+    When IDX is given the command returns a dictionary with the LCS
+    length and all the ranges in both the strings, start and end
+    offset for each string, where there are matches.
+    When WITHMATCHLEN is given, each array representing a match will
+    also have the length of the match at the beginning of the array.
+    """
+    if options.get('len', False):
+        return int(response)
+    if options.get('idx', False):
+        if options.get('withmatchlen', False):
+            matches = [[(int(match[-1]))] + list(map(tuple, match[:-1]))
+                       for match in response[1]]
+        else:
+            matches = [list(map(tuple, match))
+                       for match in response[1]]
+        return {
+            str_if_bytes(response[0]): matches,
+            str_if_bytes(response[2]): int(response[3])
+        }
+    return str_if_bytes(response)
 
 
 def parse_cluster_info(response, **options):
@@ -668,6 +707,7 @@ class Redis(Commands, object):
         'MODULE LIST': lambda r: [pairs_to_dict(m) for m in r],
         'OBJECT': parse_object,
         'PING': lambda r: str_if_bytes(r) == 'PONG',
+        'STRALGO': parse_stralgo,
         'PUBSUB NUMSUB': parse_pubsub_numsub,
         'RANDOMKEY': lambda r: r and r or None,
         'SCAN': parse_scan,
@@ -675,10 +715,14 @@ class Redis(Commands, object):
         'SCRIPT FLUSH': bool_ok,
         'SCRIPT KILL': bool_ok,
         'SCRIPT LOAD': str_if_bytes,
+        'SENTINEL CKQUORUM': bool_ok,
+        'SENTINEL FAILOVER': bool_ok,
+        'SENTINEL FLUSHCONFIG': bool_ok,
         'SENTINEL GET-MASTER-ADDR-BY-NAME': parse_sentinel_get_master,
         'SENTINEL MASTER': parse_sentinel_master,
         'SENTINEL MASTERS': parse_sentinel_masters,
         'SENTINEL MONITOR': bool_ok,
+        'SENTINEL RESET': bool_ok,
         'SENTINEL REMOVE': bool_ok,
         'SENTINEL SENTINELS': parse_sentinel_slaves_and_sentinels,
         'SENTINEL SET': bool_ok,
@@ -701,6 +745,7 @@ class Redis(Commands, object):
         'XPENDING': parse_xpending,
         'ZADD': parse_zadd,
         'ZSCAN': parse_zscan,
+        'ZMSCORE': parse_zmscore,
     }
 
     @classmethod
