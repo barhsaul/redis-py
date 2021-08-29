@@ -33,6 +33,7 @@ class AclCommands:
     def acl_cat(self, category=None):
         """
         Returns a list of categories or commands within a category.
+
         If ``category`` is not supplied, returns a list of all categories.
         If ``category`` is supplied, returns a list of all commands within
         that category.
@@ -51,6 +52,7 @@ class AclCommands:
     def acl_getuser(self, username):
         """
         Get the ACL details for the specified ``username``.
+
         If ``username`` does not exist, return None
         """
         return self.execute_command('ACL GETUSER', username)
@@ -85,6 +87,7 @@ class AclCommands:
     def acl_load(self):
         """
         Load ACL rules from the configured ``aclfile``.
+
         Note that the server must be configured with the ``aclfile``
         directive to be able to load ACL rules from an aclfile.
         """
@@ -93,6 +96,7 @@ class AclCommands:
     def acl_save(self):
         """
         Save ACL rules to the configured ``aclfile``.
+
         Note that the server must be configured with the ``aclfile``
         directive to be able to save ACL rules to an aclfile.
         """
@@ -104,45 +108,56 @@ class AclCommands:
                     reset_passwords=False):
         """
         Create or update an ACL user.
+
         Create or update the ACL for ``username``. If the user already exists,
         the existing ACL is completely overwritten and replaced with the
         specified values.
+
         ``enabled`` is a boolean indicating whether the user should be allowed
         to authenticate or not. Defaults to ``False``.
+
         ``nopass`` is a boolean indicating whether the can authenticate without
         a password. This cannot be True if ``passwords`` are also specified.
+
         ``passwords`` if specified is a list of plain text passwords
         to add to or remove from the user. Each password must be prefixed with
         a '+' to add or a '-' to remove. For convenience, the value of
         ``passwords`` can be a simple prefixed string when adding or
         removing a single password.
+
         ``hashed_passwords`` if specified is a list of SHA-256 hashed passwords
         to add to or remove from the user. Each hashed password must be
         prefixed with a '+' to add or a '-' to remove. For convenience,
         the value of ``hashed_passwords`` can be a simple prefixed string when
         adding or removing a single password.
+
         ``categories`` if specified is a list of strings representing category
         permissions. Each string must be prefixed with either a '+' to add the
         category permission or a '-' to remove the category permission.
+
         ``commands`` if specified is a list of strings representing command
         permissions. Each string must be prefixed with either a '+' to add the
         command permission or a '-' to remove the command permission.
+
         ``keys`` if specified is a list of key patterns to grant the user
         access to. Keys patterns allow '*' to support wildcard matching. For
         example, '*' grants access to all keys while 'cache:*' grants access
         to all keys that are prefixed with 'cache:'. ``keys`` should not be
         prefixed with a '~'.
+
         ``reset`` is a boolean indicating whether the user should be fully
         reset prior to applying the new ACL. Setting this to True will
         remove all existing passwords, flags and privileges from the user and
         then apply the specified rules. If this is False, the user's existing
         passwords, flags and privileges will be kept and any new specified
         rules will be applied on top.
+
         ``reset_keys`` is a boolean indicating whether the user's key
         permissions should be reset prior to applying any new key permissions
         specified in ``keys``. If this is False, the user's existing
         key permissions will be kept and any new specified key permissions
         will be applied on top.
+
         ``reset_passwords`` is a boolean indicating whether to remove all
         existing passwords and the 'nopass' flag from the user prior to
         applying any new passwords specified in 'passwords' or
@@ -277,7 +292,7 @@ class ManagementCommands:
             client_types = ('normal', 'master', 'slave', 'pubsub')
             if str(_type).lower() not in client_types:
                 raise DataError("CLIENT KILL type must be one of %r" % (
-                    client_types,))
+                                client_types,))
             args.extend((b'TYPE', _type))
         if skipme is not None:
             if not isinstance(skipme, bool):
@@ -304,7 +319,7 @@ class ManagementCommands:
         """
         return self.execute_command('CLIENT INFO')
 
-    def client_list(self, _type=None):
+    def client_list(self, _type=None, client_id=None):
         """
         Returns a list of currently connected clients.
         If type of client specified, only that type will be returned.
@@ -312,13 +327,18 @@ class ManagementCommands:
          replica, pubsub)
         """
         "Returns a list of currently connected clients"
+        args = []
         if _type is not None:
             client_types = ('normal', 'master', 'replica', 'pubsub')
             if str(_type).lower() not in client_types:
                 raise DataError("CLIENT LIST _type must be one of %r" % (
-                    client_types,))
-            return self.execute_command('CLIENT LIST', b'TYPE', _type)
-        return self.execute_command('CLIENT LIST')
+                                client_types,))
+            args.append(b'TYPE')
+            args.append(_type)
+        if client_id is not None:
+            args.append(b"ID")
+            args.append(client_id)
+        return self.execute_command('CLIENT LIST', *args)
 
     def client_getname(self):
         "Returns the current connection name"
@@ -398,6 +418,7 @@ class ManagementCommands:
     def flushall(self, asynchronous=False):
         """
         Delete all keys in all databases on the current host.
+
         ``asynchronous`` indicates whether the operation is
         executed asynchronously by the server.
         """
@@ -409,6 +430,7 @@ class ManagementCommands:
     def flushdb(self, asynchronous=False):
         """
         Delete all keys in the current database.
+
         ``asynchronous`` indicates whether the operation is
         executed asynchronously by the server.
         """
@@ -424,8 +446,10 @@ class ManagementCommands:
     def info(self, section=None):
         """
         Returns a dictionary containing information about the Redis server
+
         The ``section`` option can be used to select a specific section
         of information
+
         The section option is not supported by older versions of Redis Server,
         and will generate ResponseError
         """
@@ -446,13 +470,17 @@ class ManagementCommands:
         """
         Migrate 1 or more keys from the current Redis server to a different
         server specified by the ``host``, ``port`` and ``destination_db``.
+
         The ``timeout``, specified in milliseconds, indicates the maximum
         time the connection between the two servers can be idle before the
         command is interrupted.
+
         If ``copy`` is True, the specified ``keys`` are NOT deleted from
         the source server.
+
         If ``replace`` is True, this operation will overwrite the keys
         on the destination server if they exist.
+
         If ``auth`` is specified, authenticate to the destination server with
         the password provided.
         """
@@ -484,6 +512,7 @@ class ManagementCommands:
         """
         Return the total memory usage for key, its value and associated
         administrative overheads.
+
         For nested data structures, ``samples`` is the number of elements to
         sample. If left unspecified, the server's default is 5. Use 0 to sample
         all elements.
@@ -589,7 +618,7 @@ class BasicKeyCommands:
     def bitcount(self, key, start=None, end=None):
         """
         Returns the count of set bits in the value of ``key``.  Optional
-        ``start`` and ``end`` paramaters indicate which bytes to consider
+        ``start`` and ``end`` parameters indicate which bytes to consider
         """
         params = [key]
         if start is not None and end is not None:
@@ -617,7 +646,7 @@ class BasicKeyCommands:
     def bitpos(self, key, bit, start=None, end=None):
         """
         Return the position of the first bit set to 1 or 0 in a string.
-        ``start`` and ``end`` difines search range. The range is interpreted
+        ``start`` and ``end`` defines search range. The range is interpreted
         as a range of bytes and not a range of bits, so start=0 and end=2
         means to look at the first three bytes.
         """
@@ -637,8 +666,10 @@ class BasicKeyCommands:
     def copy(self, source, destination, destination_db=None, replace=False):
         """
         Copy the value stored in the ``source`` key to the ``destination`` key.
+
         ``destination_db`` an alternative destination database. By default,
         the ``destination`` key is created in the source Redis database.
+
         ``replace`` whether the ``destination`` key should be removed before
         copying the value to it. By default, the value is not copied if
         the ``destination`` key already exists.
@@ -683,7 +714,6 @@ class BasicKeyCommands:
     def exists(self, *names):
         "Returns the number of ``names`` that exist"
         return self.execute_command('EXISTS', *names)
-
     __contains__ = exists
 
     def expire(self, name, time):
@@ -726,12 +756,17 @@ class BasicKeyCommands:
         GETEX is similar to GET, but is a write command with
         additional options. All time parameters can be given as
         datetime.timedelta or integers.
+
         ``ex`` sets an expire flag on key ``name`` for ``ex`` seconds.
+
         ``px`` sets an expire flag on key ``name`` for ``px`` milliseconds.
+
         ``exat`` sets an expire flag on key ``name`` for ``ex`` seconds,
         specified in unix time.
+
         ``pxat`` sets an expire flag on key ``name`` for ``ex`` milliseconds,
         specified in unix time.
+
         ``persist`` remove the time to live associated with ``name``.
         """
 
@@ -795,6 +830,9 @@ class BasicKeyCommands:
         """
         Sets the value at key ``name`` to ``value``
         and returns the old value at key ``name`` atomically.
+
+        As per Redis 6.2, GETSET is considered deprecated.
+        Please use SET with GET parameter in new code.
         """
         return self.execute_command('GETSET', name, value)
 
@@ -825,14 +863,32 @@ class BasicKeyCommands:
         "Returns a list of keys matching ``pattern``"
         return self.execute_command('KEYS', pattern)
 
+    def lmove(self, first_list, second_list, src="LEFT", dest="RIGHT"):
+        """
+        Atomically returns and removes the first/last element of a list,
+        pushing it as the first/last element on the destination list.
+        Returns the element being popped and pushed.
+        """
+        params = [first_list, second_list, src, dest]
+        return self.execute_command("LMOVE", *params)
+
+    def blmove(self, first_list, second_list, timeout,
+               src="LEFT", dest="RIGHT"):
+        """
+        Blocking version of lmove.
+        """
+        params = [first_list, second_list, src, dest, timeout]
+        return self.execute_command("BLMOVE", *params)
+
     def mget(self, keys, *args):
         """
         Returns a list of values ordered identically to ``keys``
         """
+        from redis.client import EMPTY_RESPONSE
         args = list_or_args(keys, args)
         options = {}
         if not args:
-            options["EMPTY_RESPONSE"] = []
+            options[EMPTY_RESPONSE] = []
         return self.execute_command('MGET', *args, **options)
 
     def mset(self, mapping):
@@ -904,6 +960,7 @@ class BasicKeyCommands:
     def hrandfield(self, key, count=None, withvalues=False):
         """
         Return a random field from the hash value stored at key.
+
         count: if the argument is positive, return an array of distinct fields.
         If called with a negative count, the behavior changes and the command
         is allowed to return the same field multiple times. In this case,
@@ -938,8 +995,10 @@ class BasicKeyCommands:
         """
         Create a key using the provided serialized value, previously obtained
         using DUMP.
+
         ``replace`` allows an existing key on ``name`` to be overridden. If
         it's not specified an error is raised on collision.
+
         ``absttl`` if True, specified ``ttl`` should represent an absolute Unix
         timestamp in milliseconds in which the key will expire. (Redis 5.0 or
         greater).
@@ -952,19 +1011,29 @@ class BasicKeyCommands:
         return self.execute_command('RESTORE', *params)
 
     def set(self, name, value,
-            ex=None, px=None, nx=False, xx=False, keepttl=False):
+            ex=None, px=None, nx=False, xx=False, keepttl=False, get=False):
         """
         Set the value at key ``name`` to ``value``
+
         ``ex`` sets an expire flag on key ``name`` for ``ex`` seconds.
+
         ``px`` sets an expire flag on key ``name`` for ``px`` milliseconds.
+
         ``nx`` if set to True, set the value at key ``name`` to ``value`` only
             if it does not exist.
+
         ``xx`` if set to True, set the value at key ``name`` to ``value`` only
             if it already exists.
+
         ``keepttl`` if True, retain the time to live associated with the key.
             (Available since Redis 6.0)
+
+        ``get`` if True, set the value at key ``name`` to ``value`` and return
+            the old value stored at key, or None when key did not exist.
+            (Available since Redis 6.2)
         """
         pieces = [name, value]
+        options = {}
         if ex is not None:
             pieces.append('EX')
             if isinstance(ex, datetime.timedelta):
@@ -984,7 +1053,11 @@ class BasicKeyCommands:
         if keepttl:
             pieces.append('KEEPTTL')
 
-        return self.execute_command('SET', *pieces)
+        if get:
+            pieces.append('GET')
+            options["get"] = True
+
+        return self.execute_command('SET', *pieces, **options)
 
     def __setitem__(self, name, value):
         self.set(name, value)
@@ -1019,6 +1092,7 @@ class BasicKeyCommands:
         If ``offset`` exceeds the length of the original value, null bytes
         will be used to pad between the end of the previous value and the start
         of what's being injected.
+
         Returns the length of the new string.
         """
         return self.execute_command('SETRANGE', name, offset, value)
@@ -1073,9 +1147,11 @@ class ListCommands:
         """
         LPOP a value off of the first non-empty list
         named in the ``keys`` list.
+
         If none of the lists in ``keys`` has a value to LPOP, then block
         for ``timeout`` seconds, or until a value gets pushed on to one
         of the lists.
+
         If timeout is 0, then block indefinitely.
         """
         if timeout is None:
@@ -1088,9 +1164,11 @@ class ListCommands:
         """
         RPOP a value off of the first non-empty list
         named in the ``keys`` list.
+
         If none of the lists in ``keys`` has a value to RPOP, then block
         for ``timeout`` seconds, or until a value gets pushed on to one
         of the lists.
+
         If timeout is 0, then block indefinitely.
         """
         if timeout is None:
@@ -1103,6 +1181,7 @@ class ListCommands:
         """
         Pop a value off the tail of ``src``, push it on the head of ``dst``
         and then return it.
+
         This command blocks until a value is in ``src`` or until ``timeout``
         seconds elapse, whichever is first. A ``timeout`` value of 0 blocks
         forever.
@@ -1114,6 +1193,7 @@ class ListCommands:
     def lindex(self, name, index):
         """
         Return the item from list ``name`` at position ``index``
+
         Negative indexes are supported and will return an item at the
         end of the list
         """
@@ -1123,6 +1203,7 @@ class ListCommands:
         """
         Insert ``value`` in list ``name`` either immediately before or after
         [``where``] ``refvalue``
+
         Returns the new length of the list on success or -1 if ``refvalue``
         is not in the list.
         """
@@ -1132,9 +1213,18 @@ class ListCommands:
         "Return the length of the list ``name``"
         return self.execute_command('LLEN', name)
 
-    def lpop(self, name):
-        "Remove and return the first item of the list ``name``"
-        return self.execute_command('LPOP', name)
+    def lpop(self, name, count=None):
+        """
+        Removes and returns the first elements of the list ``name``.
+
+        By default, the command pops a single element from the beginning of
+        the list. When provided with the optional ``count`` argument, the reply
+        will consist of up to count elements, depending on the list's length.
+        """
+        if count is not None:
+            return self.execute_command('LPOP', name, count)
+        else:
+            return self.execute_command('LPOP', name)
 
     def lpush(self, name, *values):
         "Push ``values`` onto the head of the list ``name``"
@@ -1148,6 +1238,7 @@ class ListCommands:
         """
         Return a slice of the list ``name`` between
         position ``start`` and ``end``
+
         ``start`` and ``end`` can be negative numbers just like
         Python slicing notation
         """
@@ -1157,6 +1248,7 @@ class ListCommands:
         """
         Remove the first ``count`` occurrences of elements equal to ``value``
         from the list stored at ``name``.
+
         The count argument influences the operation in the following ways:
             count > 0: Remove elements equal to value moving from head to tail.
             count < 0: Remove elements equal to value moving from tail to head.
@@ -1172,14 +1264,24 @@ class ListCommands:
         """
         Trim the list ``name``, removing all values not within the slice
         between ``start`` and ``end``
+
         ``start`` and ``end`` can be negative numbers just like
         Python slicing notation
         """
         return self.execute_command('LTRIM', name, start, end)
 
-    def rpop(self, name):
-        "Remove and return the last item of the list ``name``"
-        return self.execute_command('RPOP', name)
+    def rpop(self, name, count=None):
+        """
+        Removes and returns the last elements of the list ``name``.
+
+        By default, the command pops a single element from the end of the list.
+        When provided with the optional ``count`` argument, the reply will
+        consist of up to count elements, depending on the list's length.
+        """
+        if count is not None:
+            return self.execute_command('RPOP', name, count)
+        else:
+            return self.execute_command('RPOP', name)
 
     def rpoplpush(self, src, dst):
         """
@@ -1199,6 +1301,7 @@ class ListCommands:
     def lpos(self, name, value, rank=None, count=None, maxlen=None):
         """
         Get position of ``value`` within the list ``name``
+
          If specified, ``rank`` indicates the "rank" of the first element to
          return in case there are multiple copies of ``value`` in the list.
          By default, LPOS returns the position of the first occurrence of
@@ -1207,11 +1310,13 @@ class ListCommands:
          searches the list in reverse. For example, -1 would return the
          position of the last occurrence of ``value`` and -2 would return the
          position of the next to last occurrence of ``value``.
+
          If specified, ``count`` indicates that LPOS should return a list of
          up to ``count`` positions. A ``count`` of 2 would return a list of
          up to 2 positions. A ``count`` of 0 returns a list of all positions
          matching ``value``. When ``count`` is specified and but ``value``
          does not exist in the list, an empty list is returned.
+
          If specified, ``maxlen`` indicates the maximum number of list
          elements to scan. A ``maxlen`` of 1000 will only return the
          position(s) of items within the first 1000 entries in the list.
@@ -1233,19 +1338,27 @@ class ListCommands:
              desc=False, alpha=False, store=None, groups=False):
         """
         Sort and return the list, set or sorted set at ``name``.
+
         ``start`` and ``num`` allow for paging through the sorted data
+
         ``by`` allows using an external key to weight and sort the items.
             Use an "*" to indicate where in the key the item value is located
+
         ``get`` allows for returning items from external keys rather than the
             sorted data itself.  Use an "*" to indicate where in the key
             the item value is located
+
         ``desc`` allows for reversing the sort
+
         ``alpha`` allows for sorting lexicographically rather than numerically
+
         ``store`` allows for storing the result of the sort into
             the key ``store``
+
         ``groups`` if set to True and if ``get`` contains at least two
             elements, sort will return a list of tuples, each containing the
             values fetched from the arguments to ``get``.
+
         """
         if (start is not None and num is None) or \
                 (num is not None and start is None):
@@ -1295,9 +1408,12 @@ class ScanCommands:
         """
         Incrementally return lists of key names. Also return a cursor
         indicating the scan position.
+
         ``match`` allows for filtering the keys by pattern
+
         ``count`` provides a hint to Redis about the number of keys to
             return per batch.
+
         ``_type`` filters the returned values by a particular Redis type.
             Stock Redis instances allow for the following types:
             HASH, LIST, SET, STREAM, STRING, ZSET
@@ -1316,9 +1432,12 @@ class ScanCommands:
         """
         Make an iterator using the SCAN command so that the client doesn't
         need to remember the cursor position.
+
         ``match`` allows for filtering the keys by pattern
+
         ``count`` provides a hint to Redis about the number of keys to
             return per batch.
+
         ``_type`` filters the returned values by a particular Redis type.
             Stock Redis instances allow for the following types:
             HASH, LIST, SET, STREAM, STRING, ZSET
@@ -1334,7 +1453,9 @@ class ScanCommands:
         """
         Incrementally return lists of elements in a set. Also return a cursor
         indicating the scan position.
+
         ``match`` allows for filtering the keys by pattern
+
         ``count`` allows for hint the minimum number of returns
         """
         pieces = [name, cursor]
@@ -1348,7 +1469,9 @@ class ScanCommands:
         """
         Make an iterator using the SSCAN command so that the client doesn't
         need to remember the cursor position.
+
         ``match`` allows for filtering the keys by pattern
+
         ``count`` allows for hint the minimum number of returns
         """
         cursor = '0'
@@ -1361,7 +1484,9 @@ class ScanCommands:
         """
         Incrementally return key/value slices in a hash. Also return a cursor
         indicating the scan position.
+
         ``match`` allows for filtering the keys by pattern
+
         ``count`` allows for hint the minimum number of returns
         """
         pieces = [name, cursor]
@@ -1375,7 +1500,9 @@ class ScanCommands:
         """
         Make an iterator using the HSCAN command so that the client doesn't
         need to remember the cursor position.
+
         ``match`` allows for filtering the keys by pattern
+
         ``count`` allows for hint the minimum number of returns
         """
         cursor = '0'
@@ -1389,8 +1516,11 @@ class ScanCommands:
         """
         Incrementally return lists of elements in a sorted set. Also return a
         cursor indicating the scan position.
+
         ``match`` allows for filtering the keys by pattern
+
         ``count`` allows for hint the minimum number of returns
+
         ``score_cast_func`` a callable used to cast the score return value
         """
         pieces = [name, cursor]
@@ -1406,8 +1536,11 @@ class ScanCommands:
         """
         Make an iterator using the ZSCAN command so that the client doesn't
         need to remember the cursor position.
+
         ``match`` allows for filtering the keys by pattern
+
         ``count`` allows for hint the minimum number of returns
+
         ``score_cast_func`` a callable used to cast the score return value
         """
         cursor = '0'
@@ -1474,6 +1607,7 @@ class SetCommands:
     def srandmember(self, name, number=None):
         """
         If ``number`` is None, returns a random member of set ``name``.
+
         If ``number`` is supplied, returns a list of ``number`` random
         members of set ``name``. Note this is only available when running
         Redis 2.6+.
@@ -1506,7 +1640,7 @@ class StreamsCommands:
         Acknowledges the successful processing of one or more messages.
         name: name of the stream.
         groupname: name of the consumer group.
-        *ids: message ids to acknowlege.
+        *ids: message ids to acknowledge.
         """
         return self.execute_command('XACK', name, groupname, *ids)
 
@@ -1537,6 +1671,46 @@ class StreamsCommands:
         for pair in fields.items():
             pieces.extend(pair)
         return self.execute_command('XADD', name, *pieces)
+
+    def xautoclaim(self, name, groupname, consumername, min_idle_time,
+                   start_id=0, count=None, justid=False):
+        """
+        Transfers ownership of pending stream entries that match the specified
+        criteria. Conceptually, equivalent to calling XPENDING and then XCLAIM,
+        but provides a more straightforward way to deal with message delivery
+        failures via SCAN-like semantics.
+        name: name of the stream.
+        groupname: name of the consumer group.
+        consumername: name of a consumer that claims the message.
+        min_idle_time: filter messages that were idle less than this amount of
+        milliseconds.
+        start_id: filter messages with equal or greater ID.
+        count: optional integer, upper limit of the number of entries that the
+        command attempts to claim. Set to 100 by default.
+        justid: optional boolean, false by default. Return just an array of IDs
+        of messages successfully claimed, without returning the actual message
+        """
+        try:
+            if int(min_idle_time) < 0:
+                raise DataError("XAUTOCLAIM min_idle_time must be a non"
+                                "negative integer")
+        except TypeError:
+            pass
+
+        kwargs = {}
+        pieces = [name, groupname, consumername, min_idle_time, start_id]
+
+        try:
+            if int(count) < 0:
+                raise DataError("XPENDING count must be a integer >= 0")
+            pieces.extend([b'COUNT', count])
+        except TypeError:
+            pass
+        if justid:
+            pieces.append(b'JUSTID')
+            kwargs['parse_justid'] = True
+
+        return self.execute_command('XAUTOCLAIM', *pieces, **kwargs)
 
     def xclaim(self, name, groupname, consumername, min_idle_time, message_ids,
                idle=None, time=None, retrycount=None, force=False,
@@ -1684,7 +1858,7 @@ class StreamsCommands:
         return self.execute_command('XPENDING', name, groupname)
 
     def xpending_range(self, name, groupname, min, max, count,
-                       consumername=None):
+                       consumername=None, idle=None):
         """
         Returns information about pending messages, in a range.
         name: name of the stream.
@@ -1693,21 +1867,35 @@ class StreamsCommands:
         max: maximum stream ID.
         count: number of messages to return
         consumername: name of a consumer to filter by (optional).
+        idle: available from  version 6.2. filter entries by their
+        idle-time, given in milliseconds (optional).
         """
+        if {min, max, count} == {None}:
+            if idle is not None or consumername is not None:
+                raise DataError("if XPENDING is provided with idle time"
+                                " or consumername, it must be provided"
+                                " with min, max and count parameters")
+            return self.xpending(name, groupname)
+
         pieces = [name, groupname]
-        if min is not None or max is not None or count is not None:
-            if min is None or max is None or count is None:
-                raise DataError("XPENDING must be provided with min, max "
-                                "and count parameters, or none of them. ")
-            if not isinstance(count, int) or count < -1:
-                raise DataError("XPENDING count must be a integer >= -1")
-            pieces.extend((min, max, str(count)))
-        if consumername is not None:
-            if min is None or max is None or count is None:
-                raise DataError("if XPENDING is provided with consumername,"
-                                " it must be provided with min, max and"
-                                " count parameters")
-            pieces.append(consumername)
+        if min is None or max is None or count is None:
+            raise DataError("XPENDING must be provided with min, max "
+                            "and count parameters, or none of them.")
+        # idle
+        try:
+            if int(idle) < 0:
+                raise DataError("XPENDING idle must be a integer >= 0")
+            pieces.extend(['IDLE', idle])
+        except TypeError:
+            pass
+        # count
+        try:
+            if int(count) < 0:
+                raise DataError("XPENDING count must be a integer >= 0")
+            pieces.extend([min, max, count])
+        except TypeError:
+            pass
+
         return self.execute_command('XPENDING', *pieces, parse_detail=True)
 
     def xrange(self, name, min='-', max='+', count=None):
@@ -1812,17 +2000,33 @@ class StreamsCommands:
 
         return self.execute_command('XREVRANGE', name, *pieces)
 
-    def xtrim(self, name, maxlen, approximate=True):
+    def xtrim(self, name, maxlen=None, approximate=True, minid=None,
+              limit=None):
         """
         Trims old messages from a stream.
         name: name of the stream.
         maxlen: truncate old stream messages beyond this size
         approximate: actual stream length may be slightly more than maxlen
         """
-        pieces = [b'MAXLEN']
+        pieces = []
+        if maxlen is not None and minid is not None:
+            raise DataError("Only one of ```maxlen``` or ```minid```",
+                            "may be specified")
+
+        if maxlen is not None:
+            pieces.append(b'MAXLEN')
+        if minid is not None:
+            pieces.append(b'MINID')
         if approximate:
             pieces.append(b'~')
-        pieces.append(maxlen)
+        if maxlen is not None:
+            pieces.append(maxlen)
+        if minid is not None:
+            pieces.append(minid)
+        if limit is not None:
+            pieces.append(b"LIMIT")
+            pieces.append(limit)
+
         return self.execute_command('XTRIM', name, *pieces)
 
 
@@ -1833,24 +2037,32 @@ class SortedSetCommands:
         """
         Set any number of element-name, score pairs to the key ``name``. Pairs
         are specified as a dict of element-names keys to score values.
+
         ``nx`` forces ZADD to only create new elements and not to update
         scores for elements that already exist.
+
         ``xx`` forces ZADD to only update scores of elements that already
         exist. New elements will not be added.
+
         ``ch`` modifies the return value to be the numbers of elements changed.
         Changed elements include new elements that were added and elements
         whose scores changed.
+
         ``incr`` modifies ZADD to behave like ZINCRBY. In this mode only a
         single element/score pair can be specified and the score is the amount
         the existing score will be incremented by. When using this mode the
         return value of ZADD will be the new score of the element.
+
         ``LT`` Only update existing elements if the new score is less than
         the current score. This flag doesn't prevent adding new elements.
+
         ``GT`` Only update existing elements if the new score is greater than
         the current score. This flag doesn't prevent adding new elements.
+
         The return value of ZADD varies based on the mode specified. With no
         options, ZADD returns the number of new elements added to the sorted
         set.
+
         ``NX``, ``LT``, and ``GT`` are mutually exclusive options.
         See: https://redis.io/commands/ZADD
         """
@@ -1862,9 +2074,7 @@ class SortedSetCommands:
             raise DataError("ZADD option 'incr' only works when passing a "
                             "single element/score pair")
         if nx is True and (gt is not None or lt is not None):
-            raise DataError("Only one of 'nx', 'lt', or 'gt' may be defined.")
-        if gt is not None and lt is not None:
-            raise DataError("Only one of 'gt' or 'lt' can be set.")
+            raise DataError("Only one of 'nx', 'lt', or 'gr' may be defined.")
 
         pieces = []
         options = {}
@@ -1976,11 +2186,13 @@ class SortedSetCommands:
     def zrandmember(self, key, count=None, withscores=False):
         """
         Return a random element from the sorted set value stored at key.
+
         ``count`` if the argument is positive, return an array of distinct
         fields. If called with a negative count, the behavior changes and
         the command is allowed to return the same field multiple times.
         In this case, the number of returned fields is the absolute value
         of the specified count.
+
         ``withscores`` The optional WITHSCORES modifier changes the reply so it
         includes the respective scores of the randomly selected elements from
         the sorted set.
@@ -1997,9 +2209,11 @@ class SortedSetCommands:
         """
         ZPOPMAX a value off of the first non-empty sorted set
         named in the ``keys`` list.
+
         If none of the sorted sets in ``keys`` has a value to ZPOPMAX,
         then block for ``timeout`` seconds, or until a member gets added
         to one of the sorted sets.
+
         If timeout is 0, then block indefinitely.
         """
         if timeout is None:
@@ -2012,9 +2226,11 @@ class SortedSetCommands:
         """
         ZPOPMIN a value off of the first non-empty sorted set
         named in the ``keys`` list.
+
         If none of the sorted sets in ``keys`` has a value to ZPOPMIN,
         then block for ``timeout`` seconds, or until a member gets added
         to one of the sorted sets.
+
         If timeout is 0, then block indefinitely.
         """
         if timeout is None:
@@ -2028,10 +2244,14 @@ class SortedSetCommands:
         """
         Return a range of values from sorted set ``name`` between
         ``start`` and ``end`` sorted in ascending order.
+
         ``start`` and ``end`` can be negative, indicating the end of the range.
+
         ``desc`` a boolean indicating whether to sort the results descendingly
+
         ``withscores`` indicates to return the scores along with the values.
         The return type is a list of (value, score) pairs
+
         ``score_cast_func`` a callable used to cast the score return value
         """
         if desc:
@@ -2050,6 +2270,7 @@ class SortedSetCommands:
         """
         Stores in ``dest`` the result of a range of values from sorted set
         ``name`` between ``start`` and ``end`` sorted in ascending order.
+
         ``start`` and ``end`` can be negative, indicating the end of the range.
         """
         return self.execute_command('ZRANGESTORE', dest, name, start, end)
@@ -2058,6 +2279,7 @@ class SortedSetCommands:
         """
         Return the lexicographical range of values from sorted set ``name``
         between ``min`` and ``max``.
+
         If ``start`` and ``num`` are specified, then return a slice of the
         range.
         """
@@ -2073,6 +2295,7 @@ class SortedSetCommands:
         """
         Return the reversed lexicographical range of values from sorted set
         ``name`` between ``max`` and ``min``.
+
         If ``start`` and ``num`` are specified, then return a slice of the
         range.
         """
@@ -2089,10 +2312,13 @@ class SortedSetCommands:
         """
         Return a range of values from the sorted set ``name`` with scores
         between ``min`` and ``max``.
+
         If ``start`` and ``num`` are specified, then return a slice
         of the range.
+
         ``withscores`` indicates to return the scores along with the values.
         The return type is a list of (value, score) pairs
+
         `score_cast_func`` a callable used to cast the score return value
         """
         if (start is not None and num is None) or \
@@ -2124,6 +2350,7 @@ class SortedSetCommands:
         """
         Remove all elements in the sorted set ``name`` between the
         lexicographical range specified by ``min`` and ``max``.
+
         Returns the number of elements removed.
         """
         return self.execute_command('ZREMRANGEBYLEX', name, min, max)
@@ -2149,9 +2376,12 @@ class SortedSetCommands:
         """
         Return a range of values from sorted set ``name`` between
         ``start`` and ``end`` sorted in descending order.
+
         ``start`` and ``end`` can be negative, indicating the end of the range.
+
         ``withscores`` indicates to return the scores along with the values
         The return type is a list of (value, score) pairs
+
         ``score_cast_func`` a callable used to cast the score return value
         """
         pieces = ['ZREVRANGE', name, start, end]
@@ -2168,10 +2398,13 @@ class SortedSetCommands:
         """
         Return a range of values from the sorted set ``name`` with scores
         between ``min`` and ``max`` in descending order.
+
         If ``start`` and ``num`` are specified, then return a slice
         of the range.
+
         ``withscores`` indicates to return the scores along with the values.
         The return type is a list of (value, score) pairs
+
         ``score_cast_func`` a callable used to cast the score return value
         """
         if (start is not None and num is None) or \
@@ -2198,6 +2431,16 @@ class SortedSetCommands:
     def zscore(self, name, value):
         "Return the score of element ``value`` in sorted set ``name``"
         return self.execute_command('ZSCORE', name, value)
+
+    def zunion(self, keys, aggregate=None, withscores=False):
+        """
+        Return the union of multiple sorted sets specified by ``keys``.
+        ``keys`` can be provided as dictionary of keys and their weights.
+        Scores will be aggregated based on the ``aggregate``, or SUM if
+        none is provided.
+        """
+        return self._zaggregate('ZUNION', None, keys, aggregate,
+                                withscores=withscores)
 
     def zunionstore(self, dest, keys, aggregate=None):
         """
@@ -2379,6 +2622,7 @@ class HashCommands:
         Execute the Lua ``script``, specifying the ``numkeys`` the script
         will touch and the key names and argument values in ``keys_and_args``.
         Returns the result of the script.
+
         In practice, use the object returned by ``register_script``. This
         function exists purely for Redis API completion.
         """
@@ -2390,6 +2634,7 @@ class HashCommands:
         or SCRIPT LOAD. Specify the ``numkeys`` the script will touch and the
         key names and argument values in ``keys_and_args``. Returns the result
         of the script.
+
         In practice, use the object returned by ``register_script``. This
         function exists purely for Redis API completion.
         """
@@ -2476,17 +2721,25 @@ class GeoCommands:
         ``name`` argument which are within the borders of the area specified
         with the ``latitude`` and ``longitude`` location and the maximum
         distance from the center specified by the ``radius`` value.
+
         The units must be one of the following : m, km mi, ft. By default
+
         ``withdist`` indicates to return the distances of each place.
+
         ``withcoord`` indicates to return the latitude and longitude of
         each place.
+
         ``withhash`` indicates to return the geohash string of each place.
+
         ``count`` indicates to return the number of elements up to N.
+
         ``sort`` indicates to return the places in a sorted way, ASC for
         nearest to fairest and DESC for fairest to nearest.
+
         ``store`` indicates to save the places names in a sorted set named
         with a specific key, each element of the destination sorted set is
         populated with the score got from the original geo sorted set.
+
         ``store_dist`` indicates to save the places names in a sorted set
         named with a specific key, instead of ``store`` the sorted set
         destination score is set with the distance.
@@ -2521,7 +2774,7 @@ class GeoCommands:
         elif kwargs['unit']:
             pieces.append(kwargs['unit'])
         else:
-            pieces.append('m', )
+            pieces.append('m',)
 
         for arg_name, byte_repr in (
                 ('withdist', b'WITHDIST'),
@@ -2606,7 +2859,7 @@ class Script:
         try:
             return client.evalsha(self.sha, len(keys), *args)
         except NoScriptError:
-            # Maybe the client is pointed to a differnet server than the client
+            # Maybe the client is pointed to a different server than the client
             # that created this instance?
             # Overwrite the sha just in case there was a discrepancy.
             self.sha = client.script_load(self.script)
@@ -2617,7 +2870,6 @@ class BitFieldOperation:
     """
     Command builder for BITFIELD commands.
     """
-
     def __init__(self, client, key, default_overflow=None):
         self.client = client
         self.key = key
@@ -2766,7 +3018,8 @@ class DataAccessCommands(BasicKeyCommands, ListCommands,
     """
 
 
-class Commands(DataAccessCommands, ManagementCommands, AclCommands):
+class Commands(DataAccessCommands, ManagementCommands, AclCommands,
+               ModuleCommands):
     """
     A class containing all of the implemented redis commands. This class is
     to be used as a mixin.
