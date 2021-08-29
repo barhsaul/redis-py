@@ -27,4 +27,3 @@ rc_readonly.set('bar', 'foo2')
 print(rc_readonly.readwrite())
 # now the get command would be directed only to the slot's primary node
 print(rc_readonly.get('bar'))
-
