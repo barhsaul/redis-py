@@ -11,6 +11,7 @@ from redis import exceptions
 
 from .conftest import (
     _get_client,
+        skip_if_cluster_mode,
     skip_if_server_version_gte,
     skip_if_server_version_lt,
     skip_unless_arch_bits,
@@ -49,6 +50,7 @@ def get_stream_message(client, stream, message_id):
 class TestResponseCallbacks:
     "Tests for the response callback system"
 
+    @skip_if_cluster_mode()
     def test_response_callbacks(self, r):
         assert r.response_callbacks == redis.Redis.RESPONSE_CALLBACKS
         assert id(r.response_callbacks) != id(redis.Redis.RESPONSE_CALLBACKS)
@@ -60,6 +62,7 @@ class TestResponseCallbacks:
         assert r.response_callbacks['del'] == r.response_callbacks['DEL']
 
 
+@skip_if_cluster_mode()
 class TestRedisCommands:
     def test_command_on_invalid_key_type(self, r):
         r.lpush('a', '1')

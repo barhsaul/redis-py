@@ -4,10 +4,11 @@ import pytest
 
 from redis.exceptions import InvalidResponse, ModuleError
 from redis.utils import HIREDIS_AVAILABLE
-from .conftest import skip_if_server_version_lt
+from .conftest import skip_if_server_version_lt, skip_if_cluster_mode
 
 
 @pytest.mark.skipif(HIREDIS_AVAILABLE, reason='PythonParser only')
+@skip_if_cluster_mode()
 def test_invalid_response(r):
     raw = b'x'
     parser = r.connection._parser

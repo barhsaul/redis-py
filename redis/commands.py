@@ -3200,7 +3200,7 @@ class ClusterCommands:
                 raise RedisError(
                     'Please specify the target node name to operate "{0}" '
                     'command on, e.g. target_nodes="127.0.0.1:6379"'
-                    .format(state.upper()))
+                        .format(state.upper()))
             else:
                 return self.execute_command('CLUSTER SETSLOT', slot_id, state,
                                             node_id, target_nodes=target_nodes)
@@ -3241,3 +3241,30 @@ class ClusterCommands:
         # Reset read from replicas flag
         self.read_from_replicas = False
         return self.execute_command('READWRITE')
+
+
+class ClusterManagementCommands:
+    def flushall(self, asynchronous=False):
+        """
+        Delete all keys in the database on all hosts.
+        In cluster mode this method is the same as flushdb
+
+        ``asynchronous`` indicates whether the operation is
+        executed asynchronously by the server.
+        """
+        args = []
+        if asynchronous:
+            args.append(b'ASYNC')
+        return self.execute_command('FLUSHALL', *args)
+
+    def flushdb(self, asynchronous=False):
+        """
+        Delete all keys in the database.
+
+        ``asynchronous`` indicates whether the operation is
+        executed asynchronously by the server.
+        """
+        args = []
+        if asynchronous:
+            args.append(b'ASYNC')
+        return self.execute_command('FLUSHDB', *args)

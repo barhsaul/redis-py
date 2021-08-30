@@ -1,9 +1,11 @@
 import pytest
 
 import redis
-from .conftest import wait_for_command, skip_if_server_version_lt
+from .conftest import wait_for_command, skip_if_server_version_lt, \
+    skip_if_cluster_mode
 
 
+@skip_if_cluster_mode()
 class TestPipeline:
     def test_pipeline_is_true(self, r):
         "Ensure pipeline instances are not false-y"

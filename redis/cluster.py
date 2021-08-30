@@ -4,8 +4,9 @@ import socket
 import time
 import warnings
 
-from redis.client import Redis
-from redis.commands import ClusterCommands, DataAccessCommands
+from redis.client import CaseInsensitiveDict, Redis, parse_info
+from redis.commands import ClusterCommands, DataAccessCommands, \
+    ClusterManagementCommands
 from redis.connection import ClusterParser, ConnectionPool, Encoder, parse_url
 from redis.crc import key_slot
 from redis.exceptions import (
@@ -31,6 +32,93 @@ def get_connection(redis_node, *args, **options):
     return redis_node.connection or redis_node.connection_pool.get_connection(
         args[0], **options
     )
+
+
+def parse_cluster_slots(resp, **options):
+    """
+    """
+    current_host = options.get('current_host', '')
+
+    def fix_server(*args):
+        return str_if_bytes(args[0]) or current_host, args[1]
+
+    slots = {}
+    for slot in resp:
+        start, end, master = slot[:3]
+        slaves = slot[3:]
+        slots[start, end] = {
+            'master': fix_server(*master),
+            'slaves': [fix_server(*slave) for slave in slaves],
+        }
+
+    return slots
+
+
+def parse_cluster_nodes(resp, **options):
+    """
+    @see: http://redis.io/commands/cluster-nodes  # string
+    @see: http://redis.io/commands/cluster-slaves # list of string
+    """
+    resp = str_if_bytes(resp)
+    current_host = options.get('current_host', '')
+
+    def parse_slots(s):
+        slots, migrations = [], []
+        for r in s.split(' '):
+            if '->-' in r:
+                slot_id, dst_node_id = r[1:-1].split('->-', 1)
+                migrations.append({
+                    'slot': int(slot_id),
+                    'node_id': dst_node_id,
+                    'state': 'migrating'
+                })
+            elif '-<-' in r:
+                slot_id, src_node_id = r[1:-1].split('-<-', 1)
+                migrations.append({
+                    'slot': int(slot_id),
+                    'node_id': src_node_id,
+                    'state': 'importing'
+                })
+            elif '-' in r:
+                start, end = r.split('-')
+                slots.extend(range(int(start), int(end) + 1))
+            else:
+                slots.append(int(r))
+
+        return slots, migrations
+
+    resp = resp.splitlines()
+    nodes = []
+    for line in resp:
+        parts = line.split(' ', 8)
+        self_id, addr, flags, master_id, ping_sent, \
+        pong_recv, config_epoch, link_state = parts[:8]
+
+        host, ports = addr.rsplit(':', 1)
+        port, _, cluster_port = ports.partition('@')
+
+        node = {
+            'id': self_id,
+            'host': host or current_host,
+            'port': int(port),
+            'cluster-bus-port': int(
+                cluster_port) if cluster_port else 10000 + int(port),
+            'flags': tuple(flags.split(',')),
+            'master': master_id if master_id != '-' else None,
+            'ping-sent': int(ping_sent),
+            'pong-recv': int(pong_recv),
+            'link-state': link_state,
+            'slots': [],
+            'migrations': [],
+        }
+
+        if len(parts) >= 9:
+            slots, migrations = parse_slots(parts[8])
+            node['slots'], node['migrations'] = tuple(slots), migrations
+
+        nodes.append(node)
+
+    return nodes
 
 
 PRIMARY = "primary"
@@ -135,7 +223,8 @@ def cleanup_kwargs(**kwargs):
     return connection_kwargs
 
 
-class RedisCluster(ClusterCommands, DataAccessCommands, object):
+class RedisCluster(ClusterCommands, DataAccessCommands,
+                   ClusterManagementCommands, object):
     RedisClusterRequestTTL = 16
     NODES_FLAGS = dict_merge(
         list_keys_to_dict(
@@ -150,6 +239,8 @@ class RedisCluster(ClusterCommands, DataAccessCommands, object):
             [
                 "KEYS",
                 "SCAN",
+                "FLUSHALL",
+                "FLUSHDB"
             ],
             ALL_PRIMARIES,
         ),
@@ -179,10 +270,34 @@ class RedisCluster(ClusterCommands, DataAccessCommands, object):
         ),
     )
 
+    CLUSTER_COMMANDS_RESPONSE_CALLBACKS = {
+        'CLUSTER ADDSLOTS': bool,
+        'CLUSTER COUNT-FAILURE-REPORTS': int,
+        'CLUSTER COUNTKEYSINSLOT': int,
+        'CLUSTER DELSLOTS': bool,
+        'CLUSTER FAILOVER': bool,
+        'CLUSTER FORGET': bool,
+        'CLUSTER GETKEYSINSLOT': list,
+        'CLUSTER INFO': parse_info,
+        'CLUSTER KEYSLOT': int,
+        'CLUSTER MEET': bool,
+        'CLUSTER NODES': parse_cluster_nodes,
+        'CLUSTER REPLICATE': bool,
+        'CLUSTER RESET': bool,
+        'CLUSTER SAVECONFIG': bool,
+        'CLUSTER SET-CONFIG-EPOCH': bool,
+        'CLUSTER SETSLOT': bool,
+        'CLUSTER SLAVES': parse_cluster_nodes,
+        'CLUSTER SLOTS': parse_cluster_slots,
+        'ASKING': bool,
+        'READONLY': bool,
+        'READWRITE': bool,
+    }
+
     def __init__(
             self,
             host=None,
-            port=7000,
+            port=6379,
             startup_nodes=None,
             cluster_down_retry_attempts=3,
             skip_full_coverage_check=False,
@@ -262,13 +377,26 @@ class RedisCluster(ClusterCommands, DataAccessCommands, object):
         self.reinitialize_counter = 0
         self.reinitialize_steps = reinitialize_steps
         self.reset_connections = False
-
+        self.nodes_manager = None
         self.nodes_manager = NodesManager(
             startup_nodes=startup_nodes,
             from_url=from_url,
             skip_full_coverage_check=skip_full_coverage_check,
             **kwargs,
         )
+
+        self.response_callbacks = CaseInsensitiveDict(dict_merge(
+            Redis.RESPONSE_CALLBACKS,
+            self.__class__.CLUSTER_COMMANDS_RESPONSE_CALLBACKS))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
+    def __del__(self):
+        self.close()
 
     @classmethod
     def from_url(cls, url, **kwargs):
@@ -381,8 +509,8 @@ class RedisCluster(ClusterCommands, DataAccessCommands, object):
             # get the node that holds the key's slot
             slot = self.determine_slot(*args)
             return [self.nodes_manager.
-                    get_node_from_slot(slot, self.read_from_replicas
-                                       and command in READ_COMMANDS)]
+                        get_node_from_slot(slot, self.read_from_replicas
+                                           and command in READ_COMMANDS)]
 
     def _increment_reinitialize_counter(self, count=1):
         # In order not to reinitialize the cluster, the user can set
@@ -445,19 +573,28 @@ class RedisCluster(ClusterCommands, DataAccessCommands, object):
         target_nodes = kwargs.pop("target_nodes", None)
         for _ in range(0, self.cluster_down_retry_attempts):
             if not target_nodes:
+                # Determine the nodes to execute the command on
                 target_nodes = self._determine_nodes(*args, **kwargs)
-            else:
-                if isinstance(target_nodes, ClusterNode):
-                    # allows to pass a single node as a variable
-                    target_nodes = [target_nodes]
+                if not target_nodes:
+                    raise RedisClusterException(
+                        "No targets were found to execute"
+                        " {} command on".format(args))
+            elif isinstance(target_nodes, ClusterNode):
+                # Supports passing a single ClusterNode as a variable
+                target_nodes = [target_nodes]
+            elif isinstance(target_nodes, dict):
+                # Supports dictionaries of the format {node_name: node}.
+                # It enables to execute commands with multi nodes as follows:
+                # rc.cluster_save_config(rc.get_all_primaries())
+                target_nodes = target_nodes.values()
             try:
                 res = {}
                 for node in target_nodes:
                     res[node.name] = self._execute_command(
                         node, *args, **kwargs)
-                # When we execute the command on a single node, we can remove
-                # the dictionary and return a single response
-                return res if len(res) > 1 else res[node.name]
+                # When we execute the command on a single node, we can
+                # remove the dictionary and return a single response
+                return res if len(res) > 1 else res[target_nodes[0].name]
             except ClusterDownError:
                 # Try again with the new cluster setup. All other errors
                 # should be raised.
@@ -502,7 +639,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands, object):
                 redis_node = self.get_redis_connection(target_node)
                 # barshaul: delete the print, for debug purposes
                 print('executing {0} command on {1} {2}'.format(
-                    command, target_node.server_type, target_node.name))
+                    args, target_node.server_type, target_node.name))
                 connection = get_connection(redis_node, *args, **kwargs)
 
                 if asking:
@@ -595,6 +732,10 @@ class RedisCluster(ClusterCommands, DataAccessCommands, object):
                     redis_node.connection_pool.release(connection)
 
         raise ClusterError("TTL exhausted.")
+
+    def close(self):
+        if self.nodes_manager:
+            self.nodes_manager.close()
 
 
 class ClusterNode(object):
@@ -749,12 +890,9 @@ class NodesManager:
 
         def node_require_full_coverage(node):
             try:
-                return (
-                    "yes"
-                    in node.redis_connection.config_get(
-                        "cluster-require-full-coverage"
-                    ).values()
-                )
+                return ("yes" in node.redis_connection.config_get(
+                    "cluster-require-full-coverage").values()
+                        )
             except ConnectionError:
                 return False
             except Exception as e:
@@ -829,10 +967,11 @@ class NodesManager:
                     # responses so we won't need to handle that
                     copy_kwargs = copy.deepcopy(kwargs)
                     copy_kwargs.update({"decode_responses": True})
+                    copy_kwargs.update({"encoding": "utf-8"})
                     r = self.create_redis_node(
                         startup_node.host, startup_node.port, **copy_kwargs)
                     self.startup_nodes[startup_node.name].redis_connection = r
-                cluster_slots = r.execute_command("cluster", "slots")
+                cluster_slots = r.execute_command("CLUSTER SLOTS")
                 startup_nodes_reachable = True
             except (ConnectionError, TimeoutError):
                 continue
@@ -848,22 +987,22 @@ class NodesManager:
                 else:
                     raise RedisClusterException(
                         'ERROR sending "cluster slots" command to redis '
-                        'server: {0}'.format(
-                            startup_node)
+                        'server: {0}. error: {1}'.format(
+                            startup_node, message)
                     )
-            except Exception:
+            except Exception as e:
+                message = e.__str__()
                 raise RedisClusterException(
-                    'ERROR sending "cluster slots" command to redis server:'
-                    ' {0}'.format(startup_node)
+                    'ERROR sending "cluster slots" command to redis '
+                    'server: {0}. error: {1}'.format(
+                        startup_node, message)
                 )
 
             # If there's only one server in the cluster, its ``host`` is ''
             # Fix it to the host in startup_nodes
-            if (
-                    len(cluster_slots) == 1
+            if (len(cluster_slots) == 1
                     and len(cluster_slots[0][2][0]) == 0
-                    and len(self.startup_nodes) == 1
-            ):
+                    and len(self.startup_nodes) == 1):
                 cluster_slots[0][2][0] = startup_node.host
 
             for slot in cluster_slots:
@@ -918,7 +1057,6 @@ class NodesManager:
                 "Redis Cluster cannot be connected. Please provide at least "
                 "one reachable node. "
             )
-
         # Create Redis connections to all nodes
         self.create_redis_connections(list(tmp_nodes_cache.values()))
 
@@ -936,3 +1074,9 @@ class NodesManager:
         self.slots_cache = tmp_slots
         # Populate the startup nodes with all discovered nodes
         self.populate_startup_nodes(self.nodes_cache.values())
+
+    def close(self):
+        for node in self.nodes_cache.values():
+            if node.redis_connection:
+                node.redis_connection.close()
+

@@ -6,12 +6,15 @@ startup_nodes = [ClusterNode(host, 6378), ClusterNode(host, 6379)]
 
 # from_url examples
 rc_url = Redis.from_url("redis://localhost:6379/0")
+print(rc_url.set('foo', 'bar1'))
+print(rc_url.set('zzz', 'bar2'))
+print(rc_url.set('{000}', 'bar3'))
+
 print(rc_url.get('foo'))
 print(rc_url.keys())
-
 # rc = Redis(host=host, port=6379)
-rc = Redis(startup_nodes=startup_nodes)
-print(rc.get('foo'))
+rc = Redis(startup_nodes=startup_nodes, decode_responses=True)
+print(rc.get('{000}'))
 print(rc.keys())
 print(rc.cluster_save_config(rc.get_all_primaries()))
 print(rc.cluster_save_config(rc.get_node(host=host, port=6378)))
@@ -20,7 +23,7 @@ print(rc.cluster_save_config(rc.get_node(host=host, port=6378)))
 rc_readonly = Redis(startup_nodes=startup_nodes, read_from_replicas=True)
 for i in range(0, 4):
     # Assigning the read command to the slot's servers in a Round-Robin manner
-    print(rc_readonly.get('bar'))
+    print(rc_readonly.get('zzz'))
 # set command would be directed only to the slot's primary node
 rc_readonly.set('bar', 'foo2')
 # reset READONLY flag

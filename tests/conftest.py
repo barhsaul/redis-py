@@ -41,8 +41,10 @@ def pytest_sessionstart(session):
     info = _get_info(redis_url)
     version = info["redis_version"]
     arch_bits = info["arch_bits"]
+    cluster_enabled = info["cluster_enabled"]
     REDIS_INFO["version"] = version
     REDIS_INFO["arch_bits"] = arch_bits
+    REDIS_INFO["cluster_enabled"] = cluster_enabled
 
     # module info
     redismod_url = session.config.getoption("--redismod-url")
@@ -86,6 +88,17 @@ def skip_ifmodversion_lt(min_version: str, module_name: str):
     raise AttributeError("No redis module named {}".format(module_name))
 
 
+def skip_if_cluster_mode():
+    return pytest.mark.skipif(REDIS_INFO["cluster_enabled"],
+                              reason="This test isn't supported with cluster "
+                                     "mode")
+
+
+def skip_if_not_cluster_mode():
+    return pytest.mark.skipif(not REDIS_INFO["cluster_enabled"],
+                              reason="Cluster-mode is required for this test")
+
+
 def _get_client(cls, request, single_connection_client=True, flushdb=True,
                 from_url=None,
                 **kwargs):
@@ -100,10 +113,14 @@ def _get_client(cls, request, single_connection_client=True, flushdb=True,
         redis_url = request.config.getoption("--redis-url")
     else:
         redis_url = from_url
-    url_options = parse_url(redis_url)
-    url_options.update(kwargs)
-    pool = redis.ConnectionPool(**url_options)
-    client = cls(connection_pool=pool)
+    if REDIS_INFO["cluster_enabled"]:
+        client = redis.RedisCluster.from_url(redis_url, **kwargs)
+        single_connection_client = False
+    else:
+        url_options = parse_url(redis_url)
+        url_options.update(kwargs)
+        pool = redis.ConnectionPool(**url_options)
+        client = cls(connection_pool=pool)
     if single_connection_client:
         client = client.client()
     if request:
@@ -116,7 +133,8 @@ def _get_client(cls, request, single_connection_client=True, flushdb=True,
                     # just manually retry the flushdb
                     client.flushdb()
             client.close()
-            client.connection_pool.disconnect()
+            if not REDIS_INFO["cluster_enabled"]:
+                client.connection_pool.disconnect()
         request.addfinalizer(teardown)
     return client
 
