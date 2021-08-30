@@ -7,7 +7,8 @@ from unittest import mock
 
 from threading import Thread
 from redis.connection import ssl_available, to_bool
-from .conftest import skip_if_server_version_lt, _get_client, REDIS_6_VERSION
+from .conftest import skip_if_cluster_mode, skip_if_server_version_lt, \
+    _get_client, REDIS_6_VERSION
 from .test_pubsub import wait_for_message
 
 
@@ -25,6 +26,7 @@ class DummyConnection:
         return False
 
 
+@skip_if_cluster_mode()
 class TestConnectionPool:
     def get_pool(self, connection_kwargs=None, max_connections=None,
                  connection_class=redis.Connection):
@@ -93,6 +95,7 @@ class TestConnectionPool:
         assert repr(pool) == expected
 
 
+@skip_if_cluster_mode()
 class TestBlockingConnectionPool:
     def get_pool(self, connection_kwargs=None, max_connections=10, timeout=20):
         connection_kwargs = connection_kwargs or {}
@@ -177,6 +180,7 @@ class TestBlockingConnectionPool:
         assert repr(pool) == expected
 
 
+@skip_if_cluster_mode()
 class TestConnectionPoolURLParsing:
     def test_hostname(self):
         pool = redis.ConnectionPool.from_url('redis://my.host')
@@ -341,6 +345,7 @@ class TestConnectionPoolURLParsing:
         )
 
 
+@skip_if_cluster_mode()
 class TestConnectionPoolUnixSocketURLParsing:
     def test_defaults(self):
         pool = redis.ConnectionPool.from_url('unix:///socket')
@@ -426,6 +431,7 @@ class TestConnectionPoolUnixSocketURLParsing:
         }
 
 
+@skip_if_cluster_mode()
 @pytest.mark.skipif(not ssl_available, reason="SSL not installed")
 class TestSSLConnectionURLParsing:
     def test_host(self):
@@ -463,6 +469,7 @@ class TestSSLConnectionURLParsing:
         assert pool.get_connection('_').check_hostname is True
 
 
+@skip_if_cluster_mode()
 class TestConnection:
     def test_on_connect_error(self):
         """
@@ -560,6 +567,7 @@ class TestConnection:
             r.execute_command('DEBUG', 'ERROR', 'ERR invalid password')
 
 
+@skip_if_cluster_mode()
 class TestMultiConnectionClient:
     @pytest.fixture()
     def r(self, request):
@@ -573,6 +581,7 @@ class TestMultiConnectionClient:
         assert r.get('a') == b'123'
 
 
+@skip_if_cluster_mode()
 class TestHealthCheck:
     interval = 60
 

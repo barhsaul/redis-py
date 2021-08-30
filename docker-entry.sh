@@ -15,5 +15,5 @@ if [ "${GITHUB_ACTIONS}" = true ] ; then
 fi
 
 # use the wait-for-it util to ensure the server is running before invoking Tox
-util/wait-for-it.sh ${REDIS_MASTER} -- tox -- --redis-url=redis://"${REDIS_MASTER}"/9
+util/wait-for-it.sh ${REDIS_MASTER} -- tox -- --redis-url=redis://"${REDIS_MASTER}"/${DB}
 

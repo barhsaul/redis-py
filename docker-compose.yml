@@ -34,13 +34,57 @@ services:
     ports:
       - "26381:26381"
 
+  cluster_master_1:
+    build: docker/cluster/master_1
+    ports:
+      - "7000:7000"
+
+  cluster_master_2:
+    build: docker/cluster/master_2
+    ports:
+      - "7001:7001"
+
+  cluster_slave_1:
+    build: docker/cluster/slave_1
+    depends_on:
+      - "cluster_master_1"
+    ports:
+      - "7002:7002"
+    environment:
+      CLUSTER_MASTER_HOST: cluster_master_1
+
   test:
     build: .
     depends_on:
-      - "sentinel_3"
+      - "cluster_slave_1"
     environment:
       REDIS_MASTER_HOST: master
       REDIS_MASTER_PORT: 6379
+      DB: 9
+      CI:
+      CI_BUILD_ID:
+      CI_BUILD_URL:
+      CI_JOB_ID:
+      CODECOV_ENV:
+      CODECOV_SLUG:
+      CODECOV_TOKEN:
+      CODECOV_URL:
+      SHIPPABLE:
+      GITHUB_ACTIONS:
+      VCS_BRANCH_NAME:
+      VCS_COMMIT_ID:
+      VCS_PULL_REQUEST:
+      VCS_SLUG:
+      VCS_TAG:
+
+  test_cluster:
+    build: .
+    depends_on:
+      - "cluster_slave_1"
+    environment:
+      REDIS_MASTER_HOST: cluster_master_1
+      REDIS_MASTER_PORT: 7000
+      DB: 0
       CI:
       CI_BUILD_ID:
       CI_BUILD_URL:

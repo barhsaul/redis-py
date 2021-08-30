@@ -1,9 +1,10 @@
 import pytest
 
 import redis
-from .conftest import wait_for_command
+from .conftest import wait_for_command, skip_if_cluster_mode
 
 
+@skip_if_cluster_mode()
 class TestPipeline:
     def test_pipeline_is_true(self, r):
         "Ensure pipeline instances are not false-y"
@@ -26,7 +27,7 @@ class TestPipeline:
                     True,
                     2.0,
                     [(b'z1', 2.0), (b'z2', 4)],
-                ]
+            ]
 
     def test_pipeline_memoryview(self, r):
         with r.pipeline() as pipe:
@@ -36,7 +37,7 @@ class TestPipeline:
                 [
                     True,
                     b'a1',
-                ]
+            ]
 
     def test_pipeline_length(self, r):
         with r.pipeline() as pipe:
