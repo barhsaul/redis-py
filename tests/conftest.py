@@ -16,7 +16,7 @@ REDIS_6_VERSION = '5.9.0'
 
 
 REDIS_INFO = {}
-default_redis_url = "redis://localhost:6379/9"
+default_redis_url = "redis://localhost:6379/0"
 
 
 def pytest_addoption(parser):

@@ -53,10 +53,19 @@ services:
     environment:
       CLUSTER_MASTER_HOST: cluster_master_1
 
+  cluster_slave_2:
+    build: docker/cluster/slave_2
+    depends_on:
+      - "cluster_master_2"
+    ports:
+      - "7003:7003"
+    environment:
+      CLUSTER_MASTER_HOST: cluster_master_2
+
   test:
     build: .
     depends_on:
-      - "cluster_slave_1"
+      - "cluster_slave_2"
     environment:
       REDIS_MASTER_HOST: master
       REDIS_MASTER_PORT: 6379
@@ -80,7 +89,7 @@ services:
   test_cluster:
     build: .
     depends_on:
-      - "cluster_slave_1"
+      - "cluster_slave_2"
     environment:
       REDIS_MASTER_HOST: cluster_master_1
       REDIS_MASTER_PORT: 7000

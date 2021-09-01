@@ -3329,7 +3329,7 @@ class ClusterCommands:
                 raise RedisError(
                     'Please specify the target node name to operate "{0}" '
                     'command on, e.g. target_nodes="127.0.0.1:6379"'
-                        .format(state.upper()))
+                    .format(state.upper()))
             else:
                 return self.execute_command('CLUSTER SETSLOT', slot_id, state,
                                             node_id, target_nodes=target_nodes)

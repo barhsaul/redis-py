@@ -526,7 +526,7 @@ class Connection:
                  encoding_errors='strict', decode_responses=False,
                  parser_class=DefaultParser, socket_read_size=65536,
                  health_check_interval=0, client_name=None, username=None,
-                 retry=None, on_redis_connect=None):
+                 retry=None, redis_connect_func=None):
         """
         Initialize a new Connection.
         To specify a retry policy, first set `retry_on_timeout` to `True`
@@ -556,7 +556,7 @@ class Connection:
         self.health_check_interval = health_check_interval
         self.next_health_check = 0
         self.encoder = Encoder(encoding, encoding_errors, decode_responses)
-        self.on_redis_connect = on_redis_connect
+        self.redis_connect_func = redis_connect_func
         self._sock = None
         self._parser = parser_class(socket_read_size=socket_read_size)
         self._connect_callbacks = []
@@ -605,9 +605,9 @@ class Connection:
 
         self._sock = sock
         try:
-            if self.on_redis_connect:
-                # Use the on_redis_connect function pointer if it was passed
-                self.on_redis_connect(self)
+            if self.redis_connect_func is not None:
+                # Use the redis_connect_func function pointer if it was passed
+                self.redis_connect_func(self)
             else:
                 # Use the default on_connect function
                 self.on_connect()
@@ -926,7 +926,8 @@ class UnixDomainSocketConnection(Connection):
         self.next_health_check = 0
         self.encoder = Encoder(encoding, encoding_errors, decode_responses)
         self._sock = None
-        self._parser = parser_class(socket_read_size=socket_read_size)
+        self._socket_read_size = socket_read_size
+        self.set_parser_class(parser_class)
         self._connect_callbacks = []
         self._buffer_cutoff = 6000
 

@@ -805,7 +805,7 @@ class Redis(Commands, object):
                  ssl_check_hostname=False,
                  max_connections=None, single_connection_client=False,
                  health_check_interval=0, client_name=None, username=None,
-                 retry=None, on_redis_connect=None):
+                 retry=None, redis_connect_func=None):
         """
         Initialize a new Redis client.
         To specify a retry policy, first set `retry_on_timeout` to `True`
@@ -834,7 +834,7 @@ class Redis(Commands, object):
                 'max_connections': max_connections,
                 'health_check_interval': health_check_interval,
                 'client_name': client_name,
-                'on_redis_connect': on_redis_connect
+                'redis_connect_func': redis_connect_func
             }
             # based on input, setup appropriate connection args
             if unix_socket_path is not None:
