@@ -7,9 +7,10 @@ startup_nodes = [ClusterNode(host, 6378), ClusterNode(host, 6379)]
 # from_url examples
 rc_url = Redis.from_url("redis://localhost:6379/0")
 print(rc_url.set('foo', 'bar1'))
-print(rc_url.set('zzz', 'bar2'))
+print(rc_url.set('zzzsdfsdf', 'bar2'))
+print(rc_url.keyslot('bar'))
 print(rc_url.set('{000}', 'bar3'))
-
+print(f"get_all_nodes: {rc_url.get_all_nodes()}")
 print(rc_url.get('foo'))
 print(rc_url.keys())
 # rc = Redis(host=host, port=6379)
