@@ -41,13 +41,26 @@ class AclCommands:
         pieces = [category] if category else []
         return self.execute_command('ACL CAT', *pieces)
 
-    def acl_deluser(self, username):
+    def acl_deluser(self, *username):
         "Delete the ACL for the specified ``username``"
-        return self.execute_command('ACL DELUSER', username)
+        return self.execute_command('ACL DELUSER', *username)
 
-    def acl_genpass(self):
-        "Generate a random password value"
-        return self.execute_command('ACL GENPASS')
+    def acl_genpass(self, bits=None):
+        """Generate a random password value.
+        If ``bits`` is supplied then use this number of bits, rounded to
+        the next multiple of 4.
+        See: https://redis.io/commands/acl-genpass
+        """
+        pieces = []
+        if bits is not None:
+            try:
+                b = int(bits)
+                if b < 0 or b > 4096:
+                    raise ValueError
+            except ValueError:
+                raise DataError('genpass optionally accepts a bits argument, '
+                                'between 0 and 4096.')
+        return self.execute_command('ACL GENPASS', *pieces)
 
     def acl_getuser(self, username):
         """
@@ -56,6 +69,12 @@ class AclCommands:
         If ``username`` does not exist, return None
         """
         return self.execute_command('ACL GETUSER', username)
+
+    def acl_help(self):
+        """The ACL HELP command returns helpful text describing
+        the different subcommands.
+        """
+        return self.execute_command('ACL HELP')
 
     def acl_list(self):
         "Return a list of all ACLs on the server"
@@ -263,19 +282,22 @@ class ManagementCommands:
         "Tell the Redis server to rewrite the AOF file from data in memory."
         return self.execute_command('BGREWRITEAOF')
 
-    def bgsave(self):
+    def bgsave(self, schedule=True):
         """
         Tell the Redis server to save its data to disk.  Unlike save(),
         this method is asynchronous and returns immediately.
         """
-        return self.execute_command('BGSAVE')
+        pieces = []
+        if schedule:
+            pieces.append("SCHEDULE")
+        return self.execute_command('BGSAVE', *pieces)
 
     def client_kill(self, address):
         "Disconnects the client at ``address`` (ip:port)"
         return self.execute_command('CLIENT KILL', address)
 
     def client_kill_filter(self, _id=None, _type=None, addr=None,
-                           skipme=None, laddr=None):
+                           skipme=None, laddr=None, user=None):
         """
         Disconnects client(s) using a variety of filter options
         :param id: Kills a client by its unique ID field
@@ -283,7 +305,8 @@ class ManagementCommands:
         'master', 'slave' or 'pubsub'
         :param addr: Kills a client by its 'address:port'
         :param skipme: If True, then the client calling the command
-        :param laddr: Kills a cient by its 'local (bind)  address:port'
+        :param laddr: Kills a client by its 'local (bind)  address:port'
+        :param user: Kills a client for a specific user name
         will not get killed even if it is identified by one of the filter
         options. If skipme is not provided, the server defaults to skipme=True
         """
@@ -307,6 +330,8 @@ class ManagementCommands:
             args.extend((b'ADDR', addr))
         if laddr is not None:
             args.extend((b'LADDR', laddr))
+        if user is not None:
+            args.extend((b'USER', user))
         if not args:
             raise DataError("CLIENT KILL <filter> <value> ... ... <filter> "
                             "<value> must specify at least one filter")
@@ -319,7 +344,7 @@ class ManagementCommands:
         """
         return self.execute_command('CLIENT INFO')
 
-    def client_list(self, _type=None, client_id=None):
+    def client_list(self, _type=None, client_id=[]):
         """
         Returns a list of currently connected clients.
         If type of client specified, only that type will be returned.
@@ -335,9 +360,11 @@ class ManagementCommands:
                     client_types,))
             args.append(b'TYPE')
             args.append(_type)
-        if client_id is not None:
+        if not isinstance(client_id, list):
+            raise DataError("client_id must be a list")
+        if client_id != []:
             args.append(b"ID")
-            args.append(client_id)
+            args.append(' '.join(client_id))
         return self.execute_command('CLIENT LIST', *args)
 
     def client_getname(self):
@@ -347,6 +374,13 @@ class ManagementCommands:
     def client_id(self):
         "Returns the current connection id"
         return self.execute_command('CLIENT ID')
+
+    def client_trackinginfo(self):
+        """Returns the information about the current client connection's
+        use of the server assisted client side cache.
+        See https://redis.io/commands/client-trackinginfo
+        """
+        return self.execute_command('CLIENT TRACKINGINFO')
 
     def client_setname(self, name):
         "Sets the current connection name"
@@ -529,6 +563,12 @@ class ManagementCommands:
     def ping(self):
         "Ping the Redis server"
         return self.execute_command('PING')
+
+    def quit(self):
+        """Ask the server to close the connection.
+        https://redis.io/commands/quit
+        """
+        return self.execute_command('QUIT')
 
     def save(self):
         """
@@ -1012,7 +1052,8 @@ class BasicKeyCommands:
         return self.execute_command('RESTORE', *params)
 
     def set(self, name, value,
-            ex=None, px=None, nx=False, xx=False, keepttl=False, get=False):
+            ex=None, px=None, nx=False, xx=False, keepttl=False, get=False,
+            exat=None, pxat=None):
         """
         Set the value at key ``name`` to ``value``
 
@@ -1032,6 +1073,12 @@ class BasicKeyCommands:
         ``get`` if True, set the value at key ``name`` to ``value`` and return
             the old value stored at key, or None when key did not exist.
             (Available since Redis 6.2)
+
+        ``exat`` sets an expire flag on key ``name`` for ``ex`` seconds,
+            specified in unix time.
+
+        ``pxat`` sets an expire flag on key ``name`` for ``ex`` milliseconds,
+            specified in unix time.
         """
         pieces = [name, value]
         options = {}
@@ -1045,14 +1092,25 @@ class BasicKeyCommands:
             if isinstance(px, datetime.timedelta):
                 px = int(px.total_seconds() * 1000)
             pieces.append(px)
+        if exat is not None:
+            pieces.append('EXAT')
+            if isinstance(exat, datetime.datetime):
+                s = int(exat.microsecond / 1000000)
+                exat = int(time.mktime(exat.timetuple())) + s
+            pieces.append(exat)
+        if pxat is not None:
+            pieces.append('PXAT')
+            if isinstance(pxat, datetime.datetime):
+                ms = int(pxat.microsecond / 1000)
+                pxat = int(time.mktime(pxat.timetuple())) * 1000 + ms
+            pieces.append(pxat)
+        if keepttl:
+            pieces.append('KEEPTTL')
 
         if nx:
             pieces.append('NX')
         if xx:
             pieces.append('XX')
-
-        if keepttl:
-            pieces.append('KEEPTTL')
 
         if get:
             pieces.append('GET')
@@ -1278,9 +1336,9 @@ class ListCommands:
         "Push ``values`` onto the head of the list ``name``"
         return self.execute_command('LPUSH', name, *values)
 
-    def lpushx(self, name, value):
+    def lpushx(self, name, *values):
         "Push ``value`` onto the head of the list ``name`` if ``name`` exists"
-        return self.execute_command('LPUSHX', name, value)
+        return self.execute_command('LPUSHX', name, *values)
 
     def lrange(self, name, start, end):
         """
@@ -1875,6 +1933,18 @@ class StreamsCommands:
         groupname: name of the consumer group.
         """
         return self.execute_command('XGROUP DESTROY', name, groupname)
+
+    def xgroup_createconsumer(self, name, groupname, consumername):
+        """
+        Consumers in a consumer group are auto-created every time a new
+        consumer name is mentioned by some command.
+        They can be explicitly created by using this command.
+        name: name of the stream.
+        groupname: name of the consumer group.
+        consumername: name of consumer to create.
+        """
+        return self.execute_command('XGROUP CREATECONSUMER', name, groupname,
+                                    consumername)
 
     def xgroup_setid(self, name, groupname, id):
         """
@@ -2728,9 +2798,17 @@ class HashCommands:
         """
         return self.execute_command('SCRIPT EXISTS', *args)
 
-    def script_flush(self):
-        "Flush all scripts from the script cache"
-        return self.execute_command('SCRIPT FLUSH')
+    def script_flush(self, sync_type="SYNC"):
+        """Flush all scripts from the script cache.
+        ``sync_type`` is by default SYNC (synchronous) but it can also be
+                      ASYNC.
+        See: https://redis.io/commands/script-flush
+        """
+        if sync_type not in ["SYNC", "ASYNC"]:
+            raise DataError("SCRIPT FLUSH defaults to SYNC or"
+                            "accepts SYNC/ASYNC")
+        pieces = [sync_type]
+        return self.execute_command('SCRIPT FLUSH', *pieces)
 
     def script_kill(self):
         "Kill the currently executing Lua script"
@@ -2886,6 +2964,136 @@ class GeoCommands:
 
         return self.execute_command(command, *pieces, **kwargs)
 
+    def geosearch(self, name, member=None, longitude=None, latitude=None,
+                  unit='m', radius=None, width=None, height=None, sort=None,
+                  count=None, any=False, withcoord=False,
+                  withdist=False, withhash=False):
+        """
+        Return the members of specified key identified by the
+        ``name`` argument, which are within the borders of the
+        area specified by a given shape. This command extends the
+        GEORADIUS command, so in addition to searching within circular
+        areas, it supports searching within rectangular areas.
+        This command should be used in place of the deprecated
+        GEORADIUS and GEORADIUSBYMEMBER commands.
+        ``member`` Use the position of the given existing
+         member in the sorted set. Can't be given with ``longitude``
+         and ``latitude``.
+        ``longitude`` and ``latitude`` Use the position given by
+        this coordinates. Can't be given with ``member``
+        ``radius`` Similar to GEORADIUS, search inside circular
+        area according the given radius. Can't be given with
+        ``height`` and ``width``.
+        ``height`` and ``width`` Search inside an axis-aligned
+        rectangle, determined by the given height and width.
+        Can't be given with ``radius``
+        ``unit`` must be one of the following : m, km, mi, ft.
+        `m` for meters (the default value), `km` for kilometers,
+        `mi` for miles and `ft` for feet.
+        ``sort`` indicates to return the places in a sorted way,
+        ASC for nearest to farest and DESC for farest to nearest.
+        ``count`` limit the results to the first count matching items.
+        ``any`` is set to True, the command will return as soon as
+        enough matches are found. Can't be provided without ``count``
+        ``withdist`` indicates to return the distances of each place.
+        ``withcoord`` indicates to return the latitude and longitude of
+        each place.
+        ``withhash`` indicates to return the geohash string of each place.
+        """
+
+        return self._geosearchgeneric('GEOSEARCH',
+                                      name, member=member, longitude=longitude,
+                                      latitude=latitude, unit=unit,
+                                      radius=radius, width=width,
+                                      height=height, sort=sort, count=count,
+                                      any=any, withcoord=withcoord,
+                                      withdist=withdist, withhash=withhash,
+                                      store=None, store_dist=None)
+
+    def geosearchstore(self, dest, name, member=None, longitude=None,
+                       latitude=None, unit='m', radius=None, width=None,
+                       height=None, sort=None, count=None, any=False,
+                       storedist=False):
+        """
+        This command is like GEOSEARCH, but stores the result in
+        ``dest``. By default, it stores the results in the destination
+        sorted set with their geospatial information.
+        if ``store_dist`` set to True, the command will stores the
+        items in a sorted set populated with their distance from the
+        center of the circle or box, as a floating-point number.
+        """
+        return self._geosearchgeneric('GEOSEARCHSTORE',
+                                      dest, name, member=member,
+                                      longitude=longitude, latitude=latitude,
+                                      unit=unit, radius=radius, width=width,
+                                      height=height, sort=sort, count=count,
+                                      any=any, withcoord=None,
+                                      withdist=None, withhash=None,
+                                      store=None, store_dist=storedist)
+
+    def _geosearchgeneric(self, command, *args, **kwargs):
+        pieces = list(args)
+
+        # FROMMEMBER or FROMLONLAT
+        if kwargs['member'] is None:
+            if kwargs['longitude'] is None or kwargs['latitude'] is None:
+                raise DataError("GEOSEARCH must have member or"
+                                " longitude and latitude")
+        if kwargs['member']:
+            if kwargs['longitude'] or kwargs['latitude']:
+                raise DataError("GEOSEARCH member and longitude or latitude"
+                                " cant be set together")
+            pieces.extend([b'FROMMEMBER', kwargs['member']])
+        if kwargs['longitude'] and kwargs['latitude']:
+            pieces.extend([b'FROMLONLAT',
+                           kwargs['longitude'], kwargs['latitude']])
+
+        # BYRADIUS or BYBOX
+        if kwargs['radius'] is None:
+            if kwargs['width'] is None or kwargs['height'] is None:
+                raise DataError("GEOSEARCH must have radius or"
+                                " width and height")
+        if kwargs['unit'] is None:
+            raise DataError("GEOSEARCH must have unit")
+        if kwargs['unit'].lower() not in ('m', 'km', 'mi', 'ft'):
+            raise DataError("GEOSEARCH invalid unit")
+        if kwargs['radius']:
+            if kwargs['width'] or kwargs['height']:
+                raise DataError("GEOSEARCH radius and width or height"
+                                " cant be set together")
+            pieces.extend([b'BYRADIUS', kwargs['radius'], kwargs['unit']])
+        if kwargs['width'] and kwargs['height']:
+            pieces.extend([b'BYBOX',
+                           kwargs['width'], kwargs['height'], kwargs['unit']])
+
+        # sort
+        if kwargs['sort']:
+            if kwargs['sort'].upper() == 'ASC':
+                pieces.append(b'ASC')
+            elif kwargs['sort'].upper() == 'DESC':
+                pieces.append(b'DESC')
+            else:
+                raise DataError("GEOSEARCH invalid sort")
+
+        # count any
+        if kwargs['count']:
+            pieces.extend([b'COUNT', kwargs['count']])
+            if kwargs['any']:
+                pieces.append(b'ANY')
+        elif kwargs['any']:
+            raise DataError("GEOSEARCH any can't be provided without count")
+
+        # other properties
+        for arg_name, byte_repr in (
+                ('withdist', b'WITHDIST'),
+                ('withcoord', b'WITHCOORD'),
+                ('withhash', b'WITHHASH'),
+                ('store_dist', b'STOREDIST')):
+            if kwargs[arg_name]:
+                pieces.append(byte_repr)
+
+        return self.execute_command(command, *pieces, **kwargs)
+
 
 class ModuleCommands:
     # MODULE COMMANDS
@@ -2909,6 +3117,9 @@ class ModuleCommands:
         all loaded modules.
         """
         return self.execute_command('MODULE LIST')
+
+    def command_count(self):
+        return self.execute_command('COMMAND COUNT')
 
 
 class Script:

@@ -472,10 +472,15 @@ def parse_cluster_nodes(response, **options):
     return dict(_parse_node_line(line) for line in raw_lines)
 
 
-def parse_georadius_generic(response, **options):
+def parse_geosearch_generic(response, **options):
+    """
+    Parse the response of 'GEOSEARCH', GEORADIUS' and 'GEORADIUSBYMEMBER'
+    commands according to 'withdist', 'withhash' and 'withcoord' labels.
+    """
     if options['store'] or options['store_dist']:
-        # `store` and `store_diff` cant be combined
+        # `store` and `store_dist` cant be combined
         # with other command arguments.
+        # relevant to 'GEORADIUS' and 'GEORADIUSBYMEMBER'
         return response
 
     if type(response) != list:
@@ -483,7 +488,7 @@ def parse_georadius_generic(response, **options):
     else:
         response_list = response
 
-    if not options['withdist'] and not options['withcoord']\
+    if not options['withdist'] and not options['withcoord'] \
             and not options['withhash']:
         # just a bunch of places
         return response_list
@@ -654,6 +659,7 @@ class Redis(Commands, object):
         'ACL DELUSER': int,
         'ACL GENPASS': str_if_bytes,
         'ACL GETUSER': parse_acl_getuser,
+        'ACL HELP': lambda r: list(map(str_if_bytes, r)),
         'ACL LIST': lambda r: list(map(str_if_bytes, r)),
         'ACL LOAD': bool_ok,
         'ACL LOG': parse_acl_log,
@@ -669,6 +675,7 @@ class Redis(Commands, object):
         'CLIENT SETNAME': bool_ok,
         'CLIENT UNBLOCK': lambda r: r and int(r) == 1 or False,
         'CLIENT PAUSE': bool_ok,
+        'CLIENT TRACKINGINFO': lambda r: list(map(str_if_bytes, r)),
         'CLUSTER ADDSLOTS': bool_ok,
         'CLUSTER COUNT-FAILURE-REPORTS': lambda x: int(x),
         'CLUSTER COUNTKEYSINSLOT': lambda x: int(x),
@@ -685,6 +692,8 @@ class Redis(Commands, object):
         'CLUSTER SET-CONFIG-EPOCH': bool_ok,
         'CLUSTER SETSLOT': bool_ok,
         'CLUSTER SLAVES': parse_cluster_nodes,
+        'COMMAND': int,
+        'COMMAND COUNT': int,
         'CONFIG GET': parse_config_get,
         'CONFIG RESETSTAT': bool_ok,
         'CONFIG SET': bool_ok,
@@ -693,8 +702,9 @@ class Redis(Commands, object):
         'GEOPOS': lambda r: list(map(lambda ll: (float(ll[0]),
                                      float(ll[1]))
                                      if ll is not None else None, r)),
-        'GEORADIUS': parse_georadius_generic,
-        'GEORADIUSBYMEMBER': parse_georadius_generic,
+        'GEOSEARCH': parse_geosearch_generic,
+        'GEORADIUS': parse_geosearch_generic,
+        'GEORADIUSBYMEMBER': parse_geosearch_generic,
         'HGETALL': lambda r: r and pairs_to_dict(r) or {},
         'HSCAN': parse_hscan,
         'INFO': parse_info,
@@ -707,6 +717,7 @@ class Redis(Commands, object):
         'MODULE LIST': lambda r: [pairs_to_dict(m) for m in r],
         'OBJECT': parse_object,
         'PING': lambda r: str_if_bytes(r) == 'PONG',
+        'QUIT': bool_ok,
         'STRALGO': parse_stralgo,
         'PUBSUB NUMSUB': parse_pubsub_numsub,
         'RANDOMKEY': lambda r: r and r or None,
@@ -1799,6 +1810,12 @@ class Pipeline(Redis):
                 lambda error: self._disconnect_raise_reset(conn, error))
         finally:
             self.reset()
+
+    def discard(self):
+        """Flushes all previously queued commands
+        See: https://redis.io/commands/DISCARD
+        """
+        self.execute_command("DISCARD")
 
     def watch(self, *names):
         "Watches the values at keys ``names``"

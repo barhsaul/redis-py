@@ -27,7 +27,7 @@ class TestPipeline:
                     True,
                     2.0,
                     [(b'z1', 2.0), (b'z2', 4)],
-            ]
+                ]
 
     def test_pipeline_memoryview(self, r):
         with r.pipeline() as pipe:
@@ -37,7 +37,7 @@ class TestPipeline:
                 [
                     True,
                     b'a1',
-            ]
+                ]
 
     def test_pipeline_length(self, r):
         with r.pipeline() as pipe:
