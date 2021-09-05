@@ -97,9 +97,28 @@ class TestRedisCommands:
         assert r.acl_setuser(username, enabled=False, reset=True)
         assert r.acl_deluser(username) == 1
 
+        # now, a group of users
+        users = ['bogususer_%d' % r for r in range(0, 5)]
+        for u in users:
+            r.acl_setuser(u, enabled=False, reset=True)
+        assert r.acl_deluser(*users) > 1
+        assert r.acl_getuser(users[0]) is None
+        assert r.acl_getuser(users[1]) is None
+        assert r.acl_getuser(users[2]) is None
+        assert r.acl_getuser(users[3]) is None
+        assert r.acl_getuser(users[4]) is None
+
     @skip_if_server_version_lt(REDIS_6_VERSION)
     def test_acl_genpass(self, r):
         password = r.acl_genpass()
+        assert isinstance(password, str)
+
+        with pytest.raises(exceptions.DataError):
+            r.acl_genpass('value')
+            r.acl_genpass(-5)
+            r.acl_genpass(5555)
+
+        r.acl_genpass(555)
         assert isinstance(password, str)
 
     @skip_if_server_version_lt(REDIS_6_VERSION)
@@ -189,6 +208,12 @@ class TestRedisCommands:
         assert r.acl_setuser(username, enabled=True,
                              hashed_passwords=['-' + hashed_password])
         assert len(r.acl_getuser(username)['passwords']) == 1
+
+    @skip_if_server_version_lt(REDIS_6_VERSION)
+    def test_acl_help(self, r):
+        res = r.acl_help()
+        assert isinstance(res, list)
+        assert len(res) != 0
 
     @skip_if_server_version_lt(REDIS_6_VERSION)
     def test_acl_list(self, r, request):
@@ -305,16 +330,28 @@ class TestRedisCommands:
             assert isinstance(clients, list)
 
     @skip_if_server_version_lt('6.2.0')
-    def test_client_list_client_id(self, r):
+    def test_client_list_client_id(self, r, request):
         clients = r.client_list()
-        client_id = clients[0]['id']
-        clients = r.client_list(client_id=client_id)
+        clients = r.client_list(client_id=[clients[0]['id']])
         assert len(clients) == 1
         assert 'addr' in clients[0]
+
+        # testing multiple client ids
+        _get_client(redis.Redis, request, flushdb=False)
+        _get_client(redis.Redis, request, flushdb=False)
+        _get_client(redis.Redis, request, flushdb=False)
+        clients_listed = r.client_list(client_id=clients[:-1])
+        assert len(clients_listed) > 1
 
     @skip_if_server_version_lt('5.0.0')
     def test_client_id(self, r):
         assert r.client_id() > 0
+
+    @skip_if_server_version_lt('6.2.0')
+    def test_client_trackinginfo(self, r):
+        res = r.client_trackinginfo()
+        assert len(res) > 2
+        assert 'prefixes' in res
 
     @skip_if_server_version_lt('5.0.0')
     def test_client_unblock(self, r):
@@ -426,6 +463,19 @@ class TestRedisCommands:
         client_2_addr = clients_by_name['redis-py-c2'].get('laddr')
         assert r.client_kill_filter(laddr=client_2_addr)
 
+    @skip_if_server_version_lt('2.8.12')
+    def test_client_kill_filter_by_user(self, r, request):
+        killuser = 'user_to_kill'
+        r.acl_setuser(killuser, enabled=True, reset=True,
+                      commands=['+get', '+set', '+select'],
+                      keys=['cache:*'], nopass=True)
+        _get_client(redis.Redis, request, flushdb=False, username=killuser)
+        r.client_kill_filter(user=killuser)
+        clients = r.client_list()
+        for c in clients:
+            assert c['user'] != killuser
+        r.acl_deluser(killuser)
+
     @skip_if_server_version_lt('2.9.50')
     def test_client_pause(self, r):
         assert r.client_pause(1)
@@ -486,6 +536,9 @@ class TestRedisCommands:
 
     def test_ping(self, r):
         assert r.ping()
+
+    def test_quit(self, r):
+        assert r.quit()
 
     def test_slowlog_get(self, r, slowlog):
         assert r.slowlog_reset()
@@ -556,6 +609,11 @@ class TestRedisCommands:
         assert len(t) == 2
         assert isinstance(t[0], int)
         assert isinstance(t[1], int)
+
+    def test_bgsave(self, r):
+        assert r.bgsave()
+        time.sleep(0.3)
+        assert r.bgsave(True)
 
     # BASIC KEY COMMANDS
     def test_append(self, r):
@@ -1050,6 +1108,18 @@ class TestRedisCommands:
         assert r.set('a', '1', ex=expire_at)
         assert 0 < r.ttl('a') <= 60
 
+    @skip_if_server_version_lt('6.2.0')
+    def test_set_exat_timedelta(self, r):
+        expire_at = redis_server_time(r) + datetime.timedelta(seconds=10)
+        assert r.set('a', '1', exat=expire_at)
+        assert 0 < r.ttl('a') <= 10
+
+    @skip_if_server_version_lt('6.2.0')
+    def test_set_pxat_timedelta(self, r):
+        expire_at = redis_server_time(r) + datetime.timedelta(seconds=50)
+        assert r.set('a', '1', pxat=expire_at)
+        assert 0 < r.ttl('a') <= 100
+
     @skip_if_server_version_lt('2.6.0')
     def test_set_multipleoptions(self, r):
         r['a'] = 'val'
@@ -1219,7 +1289,7 @@ class TestRedisCommands:
         assert r.lrange('a', 0, -1) == [b'1', b'2', b'2.5', b'3']
         assert r.linsert('a', 'before', '2', '1.5') == 5
         assert r.lrange('a', 0, -1) == \
-            [b'1', b'1.5', b'2', b'2.5', b'3']
+               [b'1', b'1.5', b'2', b'2.5', b'3']
 
     def test_llen(self, r):
         r.rpush('a', '1', '2', '3')
@@ -1252,6 +1322,15 @@ class TestRedisCommands:
         r.rpush('a', '1', '2', '3')
         assert r.lpushx('a', '4') == 4
         assert r.lrange('a', 0, -1) == [b'4', b'1', b'2', b'3']
+
+    @skip_if_server_version_lt('4.0.0')
+    def test_lpushx_with_list(self, r):
+        # now with a list
+        r.lpush('somekey', 'a')
+        r.lpush('somekey', 'b')
+        assert r.lpushx('somekey', 'foo', 'asdasd', 55, 'asdasdas') == 6
+        res = r.lrange('somekey', 0, -1)
+        assert res == [b'asdasdas', b'55', b'asdasd', b'foo', b'b', b'a']
 
     def test_lrange(self, r):
         r.rpush('a', '1', '2', '3', '4', '5')
@@ -1540,7 +1619,7 @@ class TestRedisCommands:
         mapping = {'a1': 1.0, 'a2': 2.0, 'a3': 3.0}
         r.zadd('a', mapping)
         assert r.zrange('a', 0, -1, withscores=True) == \
-            [(b'a1', 1.0), (b'a2', 2.0), (b'a3', 3.0)]
+               [(b'a1', 1.0), (b'a2', 2.0), (b'a3', 3.0)]
 
         # error cases
         with pytest.raises(exceptions.DataError):
@@ -1558,19 +1637,19 @@ class TestRedisCommands:
         assert r.zadd('a', {'a1': 1}) == 1
         assert r.zadd('a', {'a1': 99, 'a2': 2}, nx=True) == 1
         assert r.zrange('a', 0, -1, withscores=True) == \
-            [(b'a1', 1.0), (b'a2', 2.0)]
+               [(b'a1', 1.0), (b'a2', 2.0)]
 
     def test_zadd_xx(self, r):
         assert r.zadd('a', {'a1': 1}) == 1
         assert r.zadd('a', {'a1': 99, 'a2': 2}, xx=True) == 0
         assert r.zrange('a', 0, -1, withscores=True) == \
-            [(b'a1', 99.0)]
+               [(b'a1', 99.0)]
 
     def test_zadd_ch(self, r):
         assert r.zadd('a', {'a1': 1}) == 1
         assert r.zadd('a', {'a1': 99, 'a2': 2}, ch=True) == 2
         assert r.zrange('a', 0, -1, withscores=True) == \
-            [(b'a2', 2.0), (b'a1', 99.0)]
+               [(b'a2', 2.0), (b'a1', 99.0)]
 
     def test_zadd_incr(self, r):
         assert r.zadd('a', {'a1': 1}) == 1
@@ -1667,7 +1746,7 @@ class TestRedisCommands:
         r.zadd('c', {'a1': 6, 'a3': 5, 'a4': 4})
         assert r.zinterstore('d', ['a', 'b', 'c']) == 2
         assert r.zrange('d', 0, -1, withscores=True) == \
-            [(b'a3', 8), (b'a1', 9)]
+               [(b'a3', 8), (b'a1', 9)]
 
     def test_zinterstore_max(self, r):
         r.zadd('a', {'a1': 1, 'a2': 1, 'a3': 1})
@@ -1675,7 +1754,7 @@ class TestRedisCommands:
         r.zadd('c', {'a1': 6, 'a3': 5, 'a4': 4})
         assert r.zinterstore('d', ['a', 'b', 'c'], aggregate='MAX') == 2
         assert r.zrange('d', 0, -1, withscores=True) == \
-            [(b'a3', 5), (b'a1', 6)]
+               [(b'a3', 5), (b'a1', 6)]
 
     def test_zinterstore_min(self, r):
         r.zadd('a', {'a1': 1, 'a2': 2, 'a3': 3})
@@ -1683,7 +1762,7 @@ class TestRedisCommands:
         r.zadd('c', {'a1': 6, 'a3': 5, 'a4': 4})
         assert r.zinterstore('d', ['a', 'b', 'c'], aggregate='MIN') == 2
         assert r.zrange('d', 0, -1, withscores=True) == \
-            [(b'a1', 1), (b'a3', 3)]
+               [(b'a1', 1), (b'a3', 3)]
 
     def test_zinterstore_with_weight(self, r):
         r.zadd('a', {'a1': 1, 'a2': 1, 'a3': 1})
@@ -1691,7 +1770,7 @@ class TestRedisCommands:
         r.zadd('c', {'a1': 6, 'a3': 5, 'a4': 4})
         assert r.zinterstore('d', {'a': 1, 'b': 2, 'c': 3}) == 2
         assert r.zrange('d', 0, -1, withscores=True) == \
-            [(b'a3', 20), (b'a1', 23)]
+               [(b'a3', 20), (b'a1', 23)]
 
     @skip_if_server_version_lt('4.9.0')
     def test_zpopmax(self, r):
@@ -1700,7 +1779,7 @@ class TestRedisCommands:
 
         # with count
         assert r.zpopmax('a', count=2) == \
-            [(b'a2', 2), (b'a1', 1)]
+               [(b'a2', 2), (b'a1', 1)]
 
     @skip_if_server_version_lt('4.9.0')
     def test_zpopmin(self, r):
@@ -1709,7 +1788,7 @@ class TestRedisCommands:
 
         # with count
         assert r.zpopmin('a', count=2) == \
-            [(b'a2', 2), (b'a3', 3)]
+               [(b'a2', 2), (b'a3', 3)]
 
     @skip_if_server_version_lt('6.2.0')
     def test_zrandemember(self, r):
@@ -1754,13 +1833,13 @@ class TestRedisCommands:
 
         # withscores
         assert r.zrange('a', 0, 1, withscores=True) == \
-            [(b'a1', 1.0), (b'a2', 2.0)]
+               [(b'a1', 1.0), (b'a2', 2.0)]
         assert r.zrange('a', 1, 2, withscores=True) == \
-            [(b'a2', 2.0), (b'a3', 3.0)]
+               [(b'a2', 2.0), (b'a3', 3.0)]
 
         # custom score function
         assert r.zrange('a', 0, 1, withscores=True, score_cast_func=int) == \
-            [(b'a1', 1), (b'a2', 2)]
+               [(b'a1', 1), (b'a2', 2)]
 
     @skip_if_server_version_lt('6.2.0')
     def test_zrangestore(self, r):
@@ -1778,7 +1857,7 @@ class TestRedisCommands:
         assert r.zrangebylex('a', '-', '[c') == [b'a', b'b', b'c']
         assert r.zrangebylex('a', '-', '(c') == [b'a', b'b']
         assert r.zrangebylex('a', '[aaa', '(g') == \
-            [b'b', b'c', b'd', b'e', b'f']
+               [b'b', b'c', b'd', b'e', b'f']
         assert r.zrangebylex('a', '[f', '+') == [b'f', b'g']
         assert r.zrangebylex('a', '-', '+', start=3, num=2) == [b'd', b'e']
 
@@ -1788,10 +1867,10 @@ class TestRedisCommands:
         assert r.zrevrangebylex('a', '[c', '-') == [b'c', b'b', b'a']
         assert r.zrevrangebylex('a', '(c', '-') == [b'b', b'a']
         assert r.zrevrangebylex('a', '(g', '[aaa') == \
-            [b'f', b'e', b'd', b'c', b'b']
+               [b'f', b'e', b'd', b'c', b'b']
         assert r.zrevrangebylex('a', '+', '[f') == [b'g', b'f']
         assert r.zrevrangebylex('a', '+', '-', start=3, num=2) == \
-            [b'd', b'c']
+               [b'd', b'c']
 
     def test_zrangebyscore(self, r):
         r.zadd('a', {'a1': 1, 'a2': 2, 'a3': 3, 'a4': 4, 'a5': 5})
@@ -1799,16 +1878,16 @@ class TestRedisCommands:
 
         # slicing with start/num
         assert r.zrangebyscore('a', 2, 4, start=1, num=2) == \
-            [b'a3', b'a4']
+               [b'a3', b'a4']
 
         # withscores
         assert r.zrangebyscore('a', 2, 4, withscores=True) == \
-            [(b'a2', 2.0), (b'a3', 3.0), (b'a4', 4.0)]
+               [(b'a2', 2.0), (b'a3', 3.0), (b'a4', 4.0)]
 
         # custom score function
         assert r.zrangebyscore('a', 2, 4, withscores=True,
                                score_cast_func=int) == \
-            [(b'a2', 2), (b'a3', 3), (b'a4', 4)]
+               [(b'a2', 2), (b'a3', 3), (b'a4', 4)]
 
     def test_zrank(self, r):
         r.zadd('a', {'a1': 1, 'a2': 2, 'a3': 3, 'a4': 4, 'a5': 5})
@@ -1857,14 +1936,14 @@ class TestRedisCommands:
 
         # withscores
         assert r.zrevrange('a', 0, 1, withscores=True) == \
-            [(b'a3', 3.0), (b'a2', 2.0)]
+               [(b'a3', 3.0), (b'a2', 2.0)]
         assert r.zrevrange('a', 1, 2, withscores=True) == \
-            [(b'a2', 2.0), (b'a1', 1.0)]
+               [(b'a2', 2.0), (b'a1', 1.0)]
 
         # custom score function
         assert r.zrevrange('a', 0, 1, withscores=True,
                            score_cast_func=int) == \
-            [(b'a3', 3.0), (b'a2', 2.0)]
+               [(b'a3', 3.0), (b'a2', 2.0)]
 
     def test_zrevrangebyscore(self, r):
         r.zadd('a', {'a1': 1, 'a2': 2, 'a3': 3, 'a4': 4, 'a5': 5})
@@ -1872,16 +1951,16 @@ class TestRedisCommands:
 
         # slicing with start/num
         assert r.zrevrangebyscore('a', 4, 2, start=1, num=2) == \
-            [b'a3', b'a2']
+               [b'a3', b'a2']
 
         # withscores
         assert r.zrevrangebyscore('a', 4, 2, withscores=True) == \
-            [(b'a4', 4.0), (b'a3', 3.0), (b'a2', 2.0)]
+               [(b'a4', 4.0), (b'a3', 3.0), (b'a2', 2.0)]
 
         # custom score function
         assert r.zrevrangebyscore('a', 4, 2, withscores=True,
                                   score_cast_func=int) == \
-            [(b'a4', 4), (b'a3', 3), (b'a2', 2)]
+               [(b'a4', 4), (b'a3', 3), (b'a2', 2)]
 
     def test_zrevrank(self, r):
         r.zadd('a', {'a1': 1, 'a2': 2, 'a3': 3, 'a4': 4, 'a5': 5})
@@ -1921,7 +2000,7 @@ class TestRedisCommands:
         r.zadd('c', {'a1': 6, 'a3': 5, 'a4': 4})
         assert r.zunionstore('d', ['a', 'b', 'c']) == 4
         assert r.zrange('d', 0, -1, withscores=True) == \
-            [(b'a2', 3), (b'a4', 4), (b'a3', 8), (b'a1', 9)]
+               [(b'a2', 3), (b'a4', 4), (b'a3', 8), (b'a1', 9)]
 
     def test_zunionstore_max(self, r):
         r.zadd('a', {'a1': 1, 'a2': 1, 'a3': 1})
@@ -1929,7 +2008,7 @@ class TestRedisCommands:
         r.zadd('c', {'a1': 6, 'a3': 5, 'a4': 4})
         assert r.zunionstore('d', ['a', 'b', 'c'], aggregate='MAX') == 4
         assert r.zrange('d', 0, -1, withscores=True) == \
-            [(b'a2', 2), (b'a4', 4), (b'a3', 5), (b'a1', 6)]
+               [(b'a2', 2), (b'a4', 4), (b'a3', 5), (b'a1', 6)]
 
     def test_zunionstore_min(self, r):
         r.zadd('a', {'a1': 1, 'a2': 2, 'a3': 3})
@@ -1937,7 +2016,7 @@ class TestRedisCommands:
         r.zadd('c', {'a1': 6, 'a3': 5, 'a4': 4})
         assert r.zunionstore('d', ['a', 'b', 'c'], aggregate='MIN') == 4
         assert r.zrange('d', 0, -1, withscores=True) == \
-            [(b'a1', 1), (b'a2', 2), (b'a3', 3), (b'a4', 4)]
+               [(b'a1', 1), (b'a2', 2), (b'a3', 3), (b'a4', 4)]
 
     def test_zunionstore_with_weight(self, r):
         r.zadd('a', {'a1': 1, 'a2': 1, 'a3': 1})
@@ -1945,7 +2024,7 @@ class TestRedisCommands:
         r.zadd('c', {'a1': 6, 'a3': 5, 'a4': 4})
         assert r.zunionstore('d', {'a': 1, 'b': 2, 'c': 3}) == 4
         assert r.zrange('d', 0, -1, withscores=True) == \
-            [(b'a2', 5), (b'a4', 12), (b'a3', 20), (b'a1', 23)]
+               [(b'a2', 5), (b'a4', 12), (b'a3', 20), (b'a1', 23)]
 
     @skip_if_server_version_lt('6.1.240')
     def test_zmscore(self, r):
@@ -2126,7 +2205,7 @@ class TestRedisCommands:
         r['user:3'] = 'u3'
         r.rpush('a', '2', '3', '1')
         assert r.sort('a', get=('user:*', '#')) == \
-            [b'u1', b'1', b'u2', b'2', b'u3', b'3']
+               [b'u1', b'1', b'u2', b'2', b'u3', b'3']
 
     def test_sort_get_groups_two(self, r):
         r['user:1'] = 'u1'
@@ -2134,7 +2213,7 @@ class TestRedisCommands:
         r['user:3'] = 'u3'
         r.rpush('a', '2', '3', '1')
         assert r.sort('a', get=('user:*', '#'), groups=True) == \
-            [(b'u1', b'1'), (b'u2', b'2'), (b'u3', b'3')]
+               [(b'u1', b'1'), (b'u2', b'2'), (b'u3', b'3')]
 
     def test_sort_groups_string_get(self, r):
         r['user:1'] = 'u1'
@@ -2169,11 +2248,11 @@ class TestRedisCommands:
         r['door:3'] = 'd3'
         r.rpush('a', '2', '3', '1')
         assert r.sort('a', get=('user:*', 'door:*', '#'), groups=True) == \
-            [
-            (b'u1', b'd1', b'1'),
-            (b'u2', b'd2', b'2'),
-            (b'u3', b'd3', b'3')
-        ]
+               [
+                   (b'u1', b'd1', b'1'),
+                   (b'u2', b'd2', b'2'),
+                   (b'u3', b'd3', b'3')
+               ]
 
     def test_sort_desc(self, r):
         r.rpush('a', '2', '3', '1')
@@ -2182,7 +2261,7 @@ class TestRedisCommands:
     def test_sort_alpha(self, r):
         r.rpush('a', 'e', 'c', 'b', 'd', 'a')
         assert r.sort('a', alpha=True) == \
-            [b'a', b'b', b'c', b'd', b'e']
+               [b'a', b'b', b'c', b'd', b'e']
 
     def test_sort_store(self, r):
         r.rpush('a', '2', '3', '1')
@@ -2214,7 +2293,7 @@ class TestRedisCommands:
                      store='sorted')
         assert num == 4
         assert r.lrange('sorted', 0, 10) == \
-            [b'vodka', b'milk', b'gin', b'apple juice']
+               [b'vodka', b'milk', b'gin', b'apple juice']
 
     def test_sort_issue_924(self, r):
         # Tests for issue https://github.com/andymccurdy/redis-py/issues/924
@@ -2332,7 +2411,7 @@ class TestRedisCommands:
 
         r.geoadd('barcelona', *values)
         assert r.geohash('barcelona', 'place1', 'place2', 'place3') == \
-            ['sp3e9yg3kd0', 'sp3e9cbc3t0', None]
+               ['sp3e9yg3kd0', 'sp3e9cbc3t0', None]
 
     @skip_unless_arch_bits(64)
     @skip_if_server_version_lt('3.2.0')
@@ -2343,8 +2422,8 @@ class TestRedisCommands:
         r.geoadd('barcelona', *values)
         # redis uses 52 bits precision, hereby small errors may be introduced.
         assert r.geopos('barcelona', 'place1', 'place2') == \
-            [(2.19093829393386841, 41.43379028184083523),
-             (2.18737632036209106, 41.40634178640635099)]
+               [(2.19093829393386841, 41.43379028184083523),
+                (2.18737632036209106, 41.40634178640635099)]
 
     @skip_if_server_version_lt('4.0.0')
     def test_geopos_no_value(self, r):
@@ -2354,6 +2433,154 @@ class TestRedisCommands:
     @skip_if_server_version_gte('4.0.0')
     def test_old_geopos_no_value(self, r):
         assert r.geopos('barcelona', 'place1', 'place2') == []
+
+    @skip_if_server_version_lt('6.2.0')
+    def test_geosearch(self, r):
+        values = (2.1909389952632, 41.433791470673, 'place1') + \
+                 (2.1873744593677, 41.406342043777, b'\x80place2') + \
+                 (2.583333, 41.316667, 'place3')
+        r.geoadd('barcelona', *values)
+        assert r.geosearch('barcelona', longitude=2.191,
+                           latitude=41.433, radius=1000) == [b'place1']
+        assert r.geosearch('barcelona', longitude=2.187,
+                           latitude=41.406, radius=1000) == [b'\x80place2']
+        assert r.geosearch('barcelona', longitude=2.191, latitude=41.433,
+                           height=1000, width=1000) == [b'place1']
+        assert r.geosearch('barcelona', member='place3', radius=100,
+                           unit='km') == [b'\x80place2', b'place1', b'place3']
+        # test count
+        assert r.geosearch('barcelona', member='place3', radius=100,
+                           unit='km', count=2) == [b'place3', b'\x80place2']
+        assert r.geosearch('barcelona', member='place3', radius=100,
+                           unit='km', count=1, any=1)[0] \
+               in [b'place1', b'place3', b'\x80place2']
+
+    @skip_unless_arch_bits(64)
+    @skip_if_server_version_lt('6.2.0')
+    def test_geosearch_member(self, r):
+        values = (2.1909389952632, 41.433791470673, 'place1') + \
+                 (2.1873744593677, 41.406342043777, b'\x80place2')
+
+        r.geoadd('barcelona', *values)
+        assert r.geosearch('barcelona', member='place1', radius=4000) == \
+               [b'\x80place2', b'place1']
+        assert r.geosearch('barcelona', member='place1', radius=10) == \
+               [b'place1']
+
+        assert r.geosearch('barcelona', member='place1', radius=4000,
+                           withdist=True,
+                           withcoord=True,
+                           withhash=True) == \
+               [[b'\x80place2', 3067.4157, 3471609625421029,
+                 (2.187376320362091, 41.40634178640635)],
+               [b'place1', 0.0, 3471609698139488,
+                (2.1909382939338684, 41.433790281840835)]]
+
+    @skip_if_server_version_lt('6.2.0')
+    def test_geosearch_sort(self, r):
+        values = (2.1909389952632, 41.433791470673, 'place1') + \
+                 (2.1873744593677, 41.406342043777, 'place2')
+        r.geoadd('barcelona', *values)
+        assert r.geosearch('barcelona', longitude=2.191,
+                           latitude=41.433, radius=3000, sort='ASC') == \
+               [b'place1', b'place2']
+        assert r.geosearch('barcelona', longitude=2.191,
+                           latitude=41.433, radius=3000, sort='DESC') == \
+               [b'place2', b'place1']
+
+    @skip_unless_arch_bits(64)
+    @skip_if_server_version_lt('6.2.0')
+    def test_geosearch_with(self, r):
+        values = (2.1909389952632, 41.433791470673, 'place1') + \
+                 (2.1873744593677, 41.406342043777, 'place2')
+        r.geoadd('barcelona', *values)
+
+        # test a bunch of combinations to test the parse response
+        # function.
+        assert r.geosearch('barcelona', longitude=2.191, latitude=41.433,
+                           radius=1, unit='km', withdist=True,
+                           withcoord=True, withhash=True) == \
+               [[b'place1', 0.0881, 3471609698139488,
+                 (2.19093829393386841, 41.43379028184083523)]]
+        assert r.geosearch('barcelona', longitude=2.191, latitude=41.433,
+                           radius=1, unit='km',
+                           withdist=True, withcoord=True) == \
+               [[b'place1', 0.0881,
+                 (2.19093829393386841, 41.43379028184083523)]]
+        assert r.geosearch('barcelona', longitude=2.191, latitude=41.433,
+                           radius=1, unit='km',
+                           withhash=True, withcoord=True) == \
+               [[b'place1', 3471609698139488,
+                 (2.19093829393386841, 41.43379028184083523)]]
+        # test no values.
+        assert r.geosearch('barcelona', longitude=2, latitude=1,
+                           radius=1, unit='km', withdist=True,
+                           withcoord=True, withhash=True) == []
+
+    @skip_if_server_version_lt('6.2.0')
+    def test_geosearch_negative(self, r):
+        # not specifying member nor longitude and latitude
+        with pytest.raises(exceptions.DataError):
+            assert r.geosearch('barcelona')
+        # specifying member and longitude and latitude
+        with pytest.raises(exceptions.DataError):
+            assert r.geosearch('barcelona',
+                               member="Paris", longitude=2, latitude=1)
+        # specifying one of longitude and latitude
+        with pytest.raises(exceptions.DataError):
+            assert r.geosearch('barcelona', longitude=2)
+        with pytest.raises(exceptions.DataError):
+            assert r.geosearch('barcelona', latitude=2)
+
+        # not specifying radius nor width and height
+        with pytest.raises(exceptions.DataError):
+            assert r.geosearch('barcelona', member="Paris")
+        # specifying radius and width and height
+        with pytest.raises(exceptions.DataError):
+            assert r.geosearch('barcelona', member="Paris",
+                               radius=3, width=2, height=1)
+        # specifying one of width and height
+        with pytest.raises(exceptions.DataError):
+            assert r.geosearch('barcelona', member="Paris", width=2)
+        with pytest.raises(exceptions.DataError):
+            assert r.geosearch('barcelona', member="Paris", height=2)
+
+        # invalid sort
+        with pytest.raises(exceptions.DataError):
+            assert r.geosearch('barcelona',
+                               member="Paris", width=2, height=2, sort="wrong")
+
+        # invalid unit
+        with pytest.raises(exceptions.DataError):
+            assert r.geosearch('barcelona',
+                               member="Paris", width=2, height=2, unit="miles")
+
+        # use any without count
+        with pytest.raises(exceptions.DataError):
+            assert r.geosearch('barcelona', member='place3', radius=100, any=1)
+
+    @skip_if_server_version_lt('6.2.0')
+    def test_geosearchstore(self, r):
+        values = (2.1909389952632, 41.433791470673, 'place1') + \
+                 (2.1873744593677, 41.406342043777, 'place2')
+
+        r.geoadd('barcelona', *values)
+        r.geosearchstore('places_barcelona', 'barcelona',
+                         longitude=2.191, latitude=41.433, radius=1000)
+        assert r.zrange('places_barcelona', 0, -1) == [b'place1']
+
+    @skip_unless_arch_bits(64)
+    @skip_if_server_version_lt('6.2.0')
+    def test_geosearchstore_dist(self, r):
+        values = (2.1909389952632, 41.433791470673, 'place1') + \
+                 (2.1873744593677, 41.406342043777, 'place2')
+
+        r.geoadd('barcelona', *values)
+        r.geosearchstore('places_barcelona', 'barcelona',
+                         longitude=2.191, latitude=41.433,
+                         radius=1000, storedist=True)
+        # instead of save the geo score, the distance is saved.
+        assert r.zscore('places_barcelona', 'place1') == 88.05060698409301
 
     @skip_if_server_version_lt('3.2.0')
     def test_georadius(self, r):
@@ -2379,7 +2606,7 @@ class TestRedisCommands:
 
         r.geoadd('barcelona', *values)
         assert r.georadius('barcelona', 2.191, 41.433, 1, unit='km') == \
-            [b'place1']
+               [b'place1']
 
     @skip_unless_arch_bits(64)
     @skip_if_server_version_lt('3.2.0')
@@ -2393,18 +2620,18 @@ class TestRedisCommands:
         # function.
         assert r.georadius('barcelona', 2.191, 41.433, 1, unit='km',
                            withdist=True, withcoord=True, withhash=True) == \
-            [[b'place1', 0.0881, 3471609698139488,
-              (2.19093829393386841, 41.43379028184083523)]]
+               [[b'place1', 0.0881, 3471609698139488,
+                 (2.19093829393386841, 41.43379028184083523)]]
 
         assert r.georadius('barcelona', 2.191, 41.433, 1, unit='km',
                            withdist=True, withcoord=True) == \
-            [[b'place1', 0.0881,
-              (2.19093829393386841, 41.43379028184083523)]]
+               [[b'place1', 0.0881,
+                 (2.19093829393386841, 41.43379028184083523)]]
 
         assert r.georadius('barcelona', 2.191, 41.433, 1, unit='km',
                            withhash=True, withcoord=True) == \
-            [[b'place1', 3471609698139488,
-              (2.19093829393386841, 41.43379028184083523)]]
+               [[b'place1', 3471609698139488,
+                 (2.19093829393386841, 41.43379028184083523)]]
 
         # test no values.
         assert r.georadius('barcelona', 2, 1, 1, unit='km',
@@ -2417,7 +2644,7 @@ class TestRedisCommands:
 
         r.geoadd('barcelona', *values)
         assert r.georadius('barcelona', 2.191, 41.433, 3000, count=1) == \
-            [b'place1']
+               [b'place1']
 
     @skip_if_server_version_lt('3.2.0')
     def test_georadius_sort(self, r):
@@ -2426,9 +2653,9 @@ class TestRedisCommands:
 
         r.geoadd('barcelona', *values)
         assert r.georadius('barcelona', 2.191, 41.433, 3000, sort='ASC') == \
-            [b'place1', b'place2']
+               [b'place1', b'place2']
         assert r.georadius('barcelona', 2.191, 41.433, 3000, sort='DESC') == \
-            [b'place2', b'place1']
+               [b'place2', b'place1']
 
     @skip_if_server_version_lt('3.2.0')
     def test_georadius_store(self, r):
@@ -2459,16 +2686,16 @@ class TestRedisCommands:
 
         r.geoadd('barcelona', *values)
         assert r.georadiusbymember('barcelona', 'place1', 4000) == \
-            [b'\x80place2', b'place1']
+               [b'\x80place2', b'place1']
         assert r.georadiusbymember('barcelona', 'place1', 10) == [b'place1']
 
         assert r.georadiusbymember('barcelona', 'place1', 4000,
                                    withdist=True, withcoord=True,
                                    withhash=True) == \
-            [[b'\x80place2', 3067.4157, 3471609625421029,
-              (2.187376320362091, 41.40634178640635)],
-             [b'place1', 0.0, 3471609698139488,
-             (2.1909382939338684, 41.433790281840835)]]
+               [[b'\x80place2', 3067.4157, 3471609625421029,
+                 (2.187376320362091, 41.40634178640635)],
+                [b'place1', 0.0, 3471609698139488,
+                 (2.1909382939338684, 41.433790281840835)]]
 
     @skip_if_server_version_lt('5.0.0')
     def test_xack(self, r):
@@ -2734,6 +2961,22 @@ class TestRedisCommands:
 
         # a consumer that hasn't yet read any messages doesn't do anything
         assert r.xgroup_delconsumer(stream, group, consumer) == 0
+
+        # read all messages from the group
+        r.xreadgroup(group, consumer, streams={stream: '>'})
+
+        # deleting the consumer should return 2 pending messages
+        assert r.xgroup_delconsumer(stream, group, consumer) == 2
+
+    @skip_if_server_version_lt('6.2.0')
+    def test_xgroup_createconsumer(self, r):
+        stream = 'stream'
+        group = 'group'
+        consumer = 'consumer'
+        r.xadd(stream, {'foo': 'bar'})
+        r.xadd(stream, {'foo': 'bar'})
+        r.xgroup_create(stream, group, 0)
+        assert r.xgroup_createconsumer(stream, group, consumer) == 1
 
         # read all messages from the group
         r.xreadgroup(group, consumer, streams={stream: '>'})
@@ -3221,6 +3464,12 @@ class TestRedisCommands:
     def test_module_list(self, r):
         assert isinstance(r.module_list(), list)
         assert not r.module_list()
+
+    @skip_if_server_version_lt('2.8.13')
+    def test_command_count(self, r):
+        res = r.command_count()
+        assert isinstance(res, int)
+        assert res >= 100
 
 
 @skip_if_cluster_mode()
