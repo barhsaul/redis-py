@@ -558,10 +558,10 @@ class Connection:
         self.encoder = Encoder(encoding, encoding_errors, decode_responses)
         self.redis_connect_func = redis_connect_func
         self._sock = None
-        self._parser = parser_class(socket_read_size=socket_read_size)
+        self._socket_read_size = socket_read_size
+        self.set_parser_class(parser_class)
         self._connect_callbacks = []
         self._buffer_cutoff = 6000
-        self._socket_read_size = socket_read_size
 
     def __repr__(self):
         repr_args = ','.join(['%s=%s' % (k, v) for k, v in self.repr_pieces()])

@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch, MagicMock, DEFAULT
+from unittest.mock import call, patch, MagicMock, DEFAULT
 from redis import Redis
 from redis.cluster import ClusterNode, RedisCluster, \
     NodesManager, PRIMARY, REPLICA
@@ -31,6 +31,7 @@ def get_mocked_redis_client(*args, **kwargs):
                     [
                         0, 8191,
                         ['127.0.0.1', 7000, 'node_0'],
+                        ['127.0.0.1', 7003, 'node_3'],
                     ],
                     [
                         8192, 16383,
@@ -286,6 +287,52 @@ class TestRedisClusterObj:
                     assert rc.get_node(node_7006.name) is None
                     assert parse_response.failed_calls == 1
                     assert parse_response.successful_calls == 1
+
+    def test_reading_from_replicas_in_round_robin(self):
+        with patch.multiple(Connection, send_command=DEFAULT,
+                            read_response=DEFAULT, _connect=DEFAULT,
+                            can_read=DEFAULT, on_connect=DEFAULT) as mocks:
+            with patch.object(Redis, 'parse_response') as parse_response:
+                def parse_response_mock_first(connection, *args, **options):
+                    # Primary
+                    assert connection.port == 7001
+                    parse_response.side_effect = parse_response_mock_second
+                    return "MOCK_OK"
+
+                def parse_response_mock_second(connection, *args, **options):
+                    # Replica
+                    assert connection.port == 7002
+                    parse_response.side_effect = parse_response_mock_third
+                    return "MOCK_OK"
+
+                def parse_response_mock_third(connection, *args, **options):
+                    # Primary
+                    assert connection.port == 7001
+                    return "MOCK_OK"
+
+                # We don't need to create a real cluster connection but we
+                # do want RedisCluster.on_connect function to get called,
+                # so we'll mock some of the Connection's functions to allow it
+                parse_response.side_effect = parse_response_mock_first
+                mocks['send_command'].return_value = True
+                mocks['read_response'].return_value = "OK"
+                mocks['_connect'].return_value = True
+                mocks['can_read'].return_value = False
+                mocks['on_connect'].return_value = True
+
+                # Create a cluster with reading from replications
+                read_cluster = get_mocked_redis_client(host=default_host,
+                                                       port=default_port,
+                                                       read_from_replicas=True)
+                assert read_cluster.read_from_replicas is True
+                # Check that we read from the slot's nodes in a round robin
+                # matter.
+                # 'foo' belongs to slot 12182 and the slot's nodes are:
+                # [(127.0.0.1,7001,primary), (127.0.0.1,7002,replica)]
+                read_cluster.get("foo")
+                read_cluster.get("foo")
+                read_cluster.get("foo")
+                mocks['send_command'].assert_has_calls([call('READONLY')])
 
 
 @skip_if_not_cluster_mode()

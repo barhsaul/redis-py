@@ -3608,3 +3608,18 @@ class ClusterManagementCommands:
         if asynchronous:
             args.append(b'ASYNC')
         return self.execute_command('FLUSHDB', *args)
+
+    def client_list(self, _type=None):
+        """
+        Returns a list of currently connected clients to the entire cluster.
+        If type of client specified, only that type will be returned.
+        :param _type: optional. one of the client types (normal, master,
+         replica, pubsub)
+        """
+        if _type is not None:
+            client_types = ('normal', 'master', 'replica', 'pubsub')
+            if str(_type).lower() not in client_types:
+                raise DataError("CLIENT LIST _type must be one of %r" % (
+                                client_types,))
+            return self.execute_command('CLIENT LIST', b'TYPE', _type)
+        return self.execute_command('CLIENT LIST')

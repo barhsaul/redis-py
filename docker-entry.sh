@@ -16,6 +16,6 @@ fi
 
 # use the wait-for-it util to ensure the server is running before invoking Tox
 util/wait-for-it.sh ${REDIS_MASTER} -- tox -- --redis-url=redis://"${REDIS_MASTER}"/${DB}
-#util/wait-for-it.sh ${REDIS_MASTER} -- tox -- tests/test_cluster.py::TestRedisClusterObj::test_moved_redirection_after_failover --redis-url=redis://"${REDIS_MASTER}"/${DB}
+#util/wait-for-it.sh ${REDIS_MASTER} -- tox -- tests/test_pubsub.py::TestPubSubMessages::test_unicode_pattern_message_handler --redis-url=redis://"${REDIS_MASTER}"/${DB}
 
 

@@ -1139,14 +1139,16 @@ class PubSub:
     HEALTH_CHECK_MESSAGE = 'redis-py-health-check'
 
     def __init__(self, connection_pool, shard_hint=None,
-                 ignore_subscribe_messages=False):
+                 ignore_subscribe_messages=False, encoder=None):
         self.connection_pool = connection_pool
         self.shard_hint = shard_hint
         self.ignore_subscribe_messages = ignore_subscribe_messages
         self.connection = None
         # we need to know the encoding options for this connection in order
         # to lookup channel and pattern names for callback handlers.
-        self.encoder = self.connection_pool.get_encoder()
+        self.encoder = encoder
+        if self.encoder is None:
+            self.encoder = self.connection_pool.get_encoder()
         if self.encoder.decode_responses:
             self.health_check_response = ['pong', self.HEALTH_CHECK_MESSAGE]
         else:
