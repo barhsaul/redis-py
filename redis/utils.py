@@ -55,3 +55,22 @@ def dict_merge(*dicts):
 
 def list_keys_to_dict(key_list, callback):
     return dict.fromkeys(key_list, callback)
+
+
+def merge_result(command, res):
+    """
+    Merge all items in `res` into a list.
+
+    This command is used when sending a command to multiple nodes
+    and they result from each node should be merged into a single list.
+    """
+    if not isinstance(res, dict):
+        raise ValueError('Value should be of dict type')
+
+    result = set([])
+
+    for _, v in res.items():
+        for value in v:
+            result.add(value)
+
+    return list(result)

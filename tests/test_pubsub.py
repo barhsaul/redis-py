@@ -55,7 +55,6 @@ def make_subscribe_test_data(pubsub, type):
     assert False, 'invalid subscribe type: %s' % type
 
 
-@skip_if_cluster_mode()
 class TestPubSubSubscribeUnsubscribe:
 
     def _test_subscribe_unsubscribe(self, p, sub_type, unsub_type, sub_func,
@@ -257,7 +256,6 @@ class TestPubSubSubscribeUnsubscribe:
         assert p.subscribed is True
 
 
-@skip_if_cluster_mode()
 class TestPubSubMessages:
     def setup_method(self, method):
         self.message = None
@@ -325,6 +323,9 @@ class TestPubSubMessages:
         assert wait_for_message(p) is None
         assert self.message == make_message('message', channel, 'test message')
 
+    @skip_if_cluster_mode()
+    # see: https://redis-py-cluster.readthedocs.io/en/stable/pubsub.html
+    # #known-limitations-with-pubsub
     def test_unicode_pattern_message_handler(self, r):
         p = r.pubsub(ignore_subscribe_messages=True)
         pattern = 'uni' + chr(4456) + '*'
@@ -345,7 +346,6 @@ class TestPubSubMessages:
         assert expect in info.exconly()
 
 
-@skip_if_cluster_mode()
 class TestPubSubAutoDecoding:
     "These tests only validate that we get unicode values back"
 
@@ -462,7 +462,6 @@ class TestPubSubAutoDecoding:
         assert pubsub.patterns == {}
 
 
-@skip_if_cluster_mode()
 class TestPubSubRedisDown:
 
     def test_channel_subscribe(self, r):
@@ -472,7 +471,6 @@ class TestPubSubRedisDown:
             p.subscribe('foo')
 
 
-@skip_if_cluster_mode()
 class TestPubSubSubcommands:
 
     @skip_if_server_version_lt('2.8.0')
@@ -499,7 +497,7 @@ class TestPubSubSubcommands:
         assert wait_for_message(p3)['type'] == 'subscribe'
 
         channels = [(b'foo', 1), (b'bar', 2), (b'baz', 3)]
-        assert channels == r.pubsub_numsub('foo', 'bar', 'baz')
+        assert r.pubsub_numsub('foo', 'bar', 'baz') == channels
 
     @skip_if_server_version_lt('2.8.0')
     def test_pubsub_numpat(self, r):
@@ -510,7 +508,6 @@ class TestPubSubSubcommands:
         assert r.pubsub_numpat() == 3
 
 
-@skip_if_cluster_mode()
 class TestPubSubPings:
 
     @skip_if_server_version_lt('3.0.0')
@@ -547,7 +544,6 @@ class TestPubSubConnectionKilled:
             wait_for_message(p)
 
 
-@skip_if_cluster_mode()
 class TestPubSubTimeouts:
     def test_get_message_with_timeout_returns_none(self, r):
         p = r.pubsub()
@@ -556,7 +552,6 @@ class TestPubSubTimeouts:
         assert p.get_message(timeout=0.01) is None
 
 
-@skip_if_cluster_mode()
 class TestPubSubWorkerThread:
 
     @pytest.mark.skipif(platform.python_implementation() == 'PyPy',

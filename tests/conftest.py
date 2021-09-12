@@ -133,7 +133,9 @@ def _get_client(cls, request, single_connection_client=True, flushdb=True,
                     # just manually retry the flushdb
                     client.flushdb()
             client.close()
-            if not REDIS_INFO["cluster_enabled"]:
+            if REDIS_INFO["cluster_enabled"]:
+                client.disconnect_connection_pools()
+            else:
                 client.connection_pool.disconnect()
         request.addfinalizer(teardown)
     return client
