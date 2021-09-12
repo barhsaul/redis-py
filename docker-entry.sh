@@ -16,6 +16,14 @@ fi
 
 # use the wait-for-it util to ensure the server is running before invoking Tox
 util/wait-for-it.sh ${REDIS_MASTER} -- tox -- --redis-url=redis://"${REDIS_MASTER}"/${DB}
-#util/wait-for-it.sh ${REDIS_MASTER} -- tox -- tests/test_pubsub.py::TestPubSubMessages::test_unicode_pattern_message_handler --redis-url=redis://"${REDIS_MASTER}"/${DB}
+
+if [[ -v CLUSTER_MASTER_HOST ]] ; then
+  # Test Cluster Redis
+  CLUSTER_MASTER="${CLUSTER_MASTER_HOST}":"${CLUSTER_MASTER_PORT}"
+  echo "Testing against Cluster-Redis Server: ${CLUSTER_MASTER}"
+  # We can skip these environments since they were already tested in the strict Redis tests
+  export TOX_SKIP_ENV='.*?(flake8|covreport|codecov)'
+  tox -- --redis-url=redis://"${CLUSTER_MASTER}"/${CLUSTER_DB}
+fi
 
 

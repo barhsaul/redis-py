@@ -70,30 +70,9 @@ services:
       REDIS_MASTER_HOST: master
       REDIS_MASTER_PORT: 6379
       DB: 9
-      CI:
-      CI_BUILD_ID:
-      CI_BUILD_URL:
-      CI_JOB_ID:
-      CODECOV_ENV:
-      CODECOV_SLUG:
-      CODECOV_TOKEN:
-      CODECOV_URL:
-      SHIPPABLE:
-      GITHUB_ACTIONS:
-      VCS_BRANCH_NAME:
-      VCS_COMMIT_ID:
-      VCS_PULL_REQUEST:
-      VCS_SLUG:
-      VCS_TAG:
-
-  test_cluster:
-    build: .
-    depends_on:
-      - "cluster_slave_2"
-    environment:
-      REDIS_MASTER_HOST: cluster_master_1
-      REDIS_MASTER_PORT: 7000
-      DB: 0
+      CLUSTER_MASTER_HOST: cluster_master_1
+      CLUSTER_MASTER_PORT: 7000
+      CLUSTER_DB: 0
       CI:
       CI_BUILD_ID:
       CI_BUILD_URL:

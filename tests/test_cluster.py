@@ -177,6 +177,7 @@ class TestRedisClusterObj:
         assert str(ex.value).startswith("No way to dispatch this command to "
                                         "Redis Cluster. Missing key.")
 
+    @pytest.mark.filterwarnings("ignore:AskError")
     def test_ask_redirection(self, r):
         """
         Test that the server handles ASK response.
@@ -203,18 +204,21 @@ class TestRedisClusterObj:
 
             assert r.execute_command("SET", "foo", "bar") == "MOCK_OK"
 
+    @pytest.mark.filterwarnings("ignore:MovedError")
     def test_moved_redirection(self, request):
         """
         Test that the client handles MOVED response.
         """
         moved_redirection_helper(request, failover=False)
 
+    @pytest.mark.filterwarnings("ignore:MovedError")
     def test_moved_redirection_after_failover(self, request):
         """
         Test that the client handles MOVED response after a failover.
         """
         moved_redirection_helper(request, failover=True)
 
+    @pytest.mark.filterwarnings("ignore:ClusterDownError")
     def test_refresh_using_specific_nodes(self, request):
         """
         Test making calls on specific nodes when the cluster has failed over to
