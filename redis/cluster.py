@@ -37,41 +37,7 @@ def get_connection(redis_node, *args, **options):
     )
 
 
-def parse_pubsub_channels(command, res, **options):
-    """
-    Result callback, handles different return types
-    switchable by the `aggregate` flag.
-    """
-    aggregate = options.get('aggregate', True)
-    if not aggregate:
-        return res
-    return merge_result(command, res)
-
-
-def parse_pubsub_numpat(command, res, **options):
-    """
-    Result callback, handles different return types
-    switchable by the `aggregate` flag.
-    """
-    aggregate = options.get('aggregate', True)
-    if not aggregate:
-        return res
-
-    numpat = 0
-    for node, node_numpat in res.items():
-        numpat += node_numpat
-    return numpat
-
-
 def parse_pubsub_numsub(command, res, **options):
-    """
-    Result callback, handles different return types
-    switchable by the `aggregate` flag.
-    """
-    aggregate = options.get('aggregate', True)
-    if not aggregate:
-        return res
-
     numsub_d = OrderedDict()
     for numsub_tups in res.values():
         for channel, numsubbed in numsub_tups:
@@ -349,16 +315,14 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
 
     RESULT_CALLBACKS = dict_merge(
         list_keys_to_dict([
-            "PUBSUB CHANNELS",
-        ], parse_pubsub_channels),
-        list_keys_to_dict([
             "PUBSUB NUMSUB",
         ], parse_pubsub_numsub),
         list_keys_to_dict([
             "PUBSUB NUMPAT",
-        ], parse_pubsub_numpat),
+        ], lambda command, res: sum(list(res.values()))),
         list_keys_to_dict([
             "KEYS",
+            "PUBSUB CHANNELS",
         ], merge_result),
     )
 
@@ -1189,6 +1153,10 @@ class NodesManager:
 class ClusterPubSub(PubSub):
     """
     Wrapper for PubSub class.
+
+    IMPORTANT: before using ClusterPubSub, read about the known limitations
+    with pubsub in Cluster mode and learn how to workaround them:
+    https://redis-py-cluster.readthedocs.io/en/stable/pubsub.html
     """
 
     def __init__(self, redis_cluster, node=None, host=None, port=None,
@@ -1198,8 +1166,8 @@ class ClusterPubSub(PubSub):
         node will be transparently chosen for the pubsub connection on the
         first command execution. The node will be determined by:
          1. Hashing the channel name in the request to find its keyslot
-         2. Determining the node that handles the keyslot.
-        If read_from_replicas is set to true, a replica can be selected.
+         2. Selecting a node that handles the keyslot: If read_from_replicas is
+            set to true, a replica can be selected.
         """
         connection_pool = None
         if host and port:

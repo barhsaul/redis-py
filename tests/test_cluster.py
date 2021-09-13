@@ -353,3 +353,54 @@ class TestClusterRedisCommands:
         assert r.get('byte_string') == byte_string
         assert r.get('integer') == str(integer).encode()
         assert r.get('unicode_string').decode('utf-8') == unicode_string
+
+    def test_pubsub_channels_merge_results(self, r):
+        nodes = r.get_all_nodes()
+        channels = []
+        i = 0
+        for node in nodes:
+            channel = "foo{0}".format(i)
+            # We will create different pubsub clients where each one is
+            # connected to a different node
+            p = r.pubsub(node)
+            p.subscribe(channel)
+            b_channel = channel.encode('utf-8')
+            channels.append(b_channel)
+            # Assert that each node returns only the channel it subscribed to
+            assert node.redis_connection.pubsub_channels() == [b_channel]
+            i += 1
+        # Assert that the cluster's pubsub_channels function returns ALL of
+        # the cluster's channels
+        result = r.pubsub_channels()
+        result.sort()
+        assert result == channels
+
+    def test_pubsub_numsub_merge_results(self, r):
+        nodes = r.get_all_nodes()
+        channel = "foo"
+        b_channel = channel.encode('utf-8')
+        for node in nodes:
+            # We will create different pubsub clients where each one is
+            # connected to a different node
+            p = r.pubsub(node)
+            p.subscribe(channel)
+            # Assert that each node returns that only one client is subscribed
+            assert node.redis_connection.pubsub_numsub(channel) == \
+                   [(b_channel, 1)]
+        # Assert that the cluster's pubsub_numsub function returns ALL clients
+        # subscribed to this channel in the entire cluster
+        assert r.pubsub_numsub(channel) == [(b_channel, len(nodes))]
+
+    def test_pubsub_numpat_merge_results(self, r):
+        nodes = r.get_all_nodes()
+        pattern = "foo*"
+        for node in nodes:
+            # We will create different pubsub clients where each one is
+            # connected to a different node
+            p = r.pubsub(node)
+            p.psubscribe(pattern)
+            # Assert that each node returns that only one client is subscribed
+            assert node.redis_connection.pubsub_numpat() == 1
+        # Assert that the cluster's pubsub_numsub function returns ALL clients
+        # subscribed to this channel in the entire cluster
+        assert r.pubsub_numpat() == len(nodes)
