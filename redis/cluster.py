@@ -410,7 +410,6 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
         self.read_from_replicas = read_from_replicas
         self.reinitialize_counter = 0
         self.reinitialize_steps = reinitialize_steps
-        self.reset_connections = False
         self.nodes_manager = None
         self.nodes_manager = NodesManager(
             startup_nodes=startup_nodes,
@@ -829,7 +828,7 @@ class LoadBalancer:
 
 
 class NodesManager:
-    def __init__(self, startup_nodes=None, from_url=False,
+    def __init__(self, startup_nodes, from_url=False,
                  skip_full_coverage_check=False, **kwargs):
         self.nodes_cache = {}
         self.slots_cache = {}
@@ -837,7 +836,6 @@ class NodesManager:
         self.populate_startup_nodes(startup_nodes)
         self.from_url = from_url
         self._skip_full_coverage_check = skip_full_coverage_check
-        self.reset_connections = False
         self._moved_exception = None
         self.connection_kwargs = kwargs
         self.read_load_balancer = None
@@ -988,8 +986,7 @@ class NodesManager:
         This function will create a redis connection to all nodes in :nodes:
         """
         for node in nodes:
-            if node.redis_connection is None or self.reset_connections:
-                # if reset_connections is set to true, create a new connection
+            if node.redis_connection is None:
                 node.redis_connection = self.create_redis_node(
                     host=node.host,
                     port=node.port,
@@ -1136,8 +1133,6 @@ class NodesManager:
                     len(self.slots_cache), REDIS_CLUSTER_HASH_SLOTS)
             )
 
-        # Switch the 'reset_connections' flag off if needed
-        self.reset_connections = False
         # Set the tmp variables to the real variables
         self.nodes_cache = tmp_nodes_cache
         self.slots_cache = tmp_slots

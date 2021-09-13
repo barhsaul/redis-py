@@ -1,8 +1,8 @@
 import pytest
 from unittest.mock import call, patch, MagicMock, DEFAULT
 from redis import Redis
-from redis.cluster import ClusterNode, RedisCluster, \
-    NodesManager, PRIMARY, REPLICA
+from redis.cluster import get_node_name, ClusterNode, RedisCluster, \
+    NodesManager, PRIMARY, REDIS_CLUSTER_HASH_SLOTS, REPLICA
 from redis.connection import Connection
 from redis.utils import str_if_bytes
 from redis.exceptions import (
@@ -15,6 +15,18 @@ from .conftest import skip_if_not_cluster_mode, _get_client
 
 default_host = "127.0.0.1"
 default_port = 7000
+default_cluster_slots = [
+    [
+        0, 8191,
+        ['127.0.0.1', 7000, 'node_0'],
+        ['127.0.0.1', 7003, 'node_3'],
+    ],
+    [
+        8192, 16383,
+        ['127.0.0.1', 7001, 'node_1'],
+        ['127.0.0.1', 7002, 'node_2']
+    ]
+]
 
 
 def get_mocked_redis_client(*args, **kwargs):
@@ -23,25 +35,16 @@ def get_mocked_redis_client(*args, **kwargs):
     nodes and slots setup to remove the problem of different IP addresses
     on different installations and machines.
     """
-
+    cluster_slots = kwargs.pop('cluster_slots', default_cluster_slots)
     with patch.object(Redis, 'execute_command') as execute_command_mock:
         def execute_command(*_args, **_kwargs):
             if _args[0] == 'CLUSTER SLOTS':
-                mock_cluster_slots = [
-                    [
-                        0, 8191,
-                        ['127.0.0.1', 7000, 'node_0'],
-                        ['127.0.0.1', 7003, 'node_3'],
-                    ],
-                    [
-                        8192, 16383,
-                        ['127.0.0.1', 7001, 'node_1'],
-                        ['127.0.0.1', 7002, 'node_2']
-                    ]
-                ]
+                mock_cluster_slots = cluster_slots
                 return mock_cluster_slots
             elif _args[1] == 'cluster-require-full-coverage':
                 return {'cluster-require-full-coverage': 'yes'}
+            else:
+                return execute_command_mock(*_args, **_kwargs)
 
         execute_command_mock.side_effect = execute_command
 
@@ -127,7 +130,7 @@ class TestRedisClusterObj:
                          ClusterNode(default_host, port_2)]
         cluster = get_mocked_redis_client(startup_nodes=startup_nodes)
         assert cluster.get_node(host=default_host, port=port_1) is not None \
-               and cluster.get_node(host=default_host, port=port_2) is not None
+            and cluster.get_node(host=default_host, port=port_2) is not None
 
     def test_empty_startup_nodes(self):
         """
@@ -338,6 +341,47 @@ class TestRedisClusterObj:
                 read_cluster.get("foo")
                 mocks['send_command'].assert_has_calls([call('READONLY')])
 
+    def test_keyslot(self, r):
+        """
+        Test that method will compute correct key in all supported cases
+        """
+        assert r.keyslot("foo") == 12182
+        assert r.keyslot("{foo}bar") == 12182
+        assert r.keyslot("{foo}") == 12182
+        assert r.keyslot(1337) == 4314
+
+        assert r.keyslot(125) == r.keyslot(b"125")
+        assert r.keyslot(125) == r.keyslot("\x31\x32\x35")
+        assert r.keyslot("大奖") == r.keyslot(b"\xe5\xa4\xa7\xe5\xa5\x96")
+        assert r.keyslot(u"大奖") == r.keyslot(b"\xe5\xa4\xa7\xe5\xa5\x96")
+        assert r.keyslot(1337.1234) == r.keyslot("1337.1234")
+        assert r.keyslot(1337) == r.keyslot("1337")
+        assert r.keyslot(b"abc") == r.keyslot("abc")
+
+    def test_get_node_name(self):
+        assert get_node_name(default_host, default_port) == \
+            "{0}:{1}".format(default_host, default_port)
+
+    def test_all_nodes(self, r):
+        """
+        Set a list of nodes and it should be possible to iterate over all
+        """
+        nodes = [node for node in r.nodes_manager.nodes_cache.values()]
+
+        for i, node in enumerate(r.get_all_nodes()):
+            assert node in nodes
+
+    def test_all_nodes_masters(self, r):
+        """
+        Set a list of nodes with random masters/slaves config and it shold
+        be possible to iterate over all of them.
+        """
+        nodes = [node for node in r.nodes_manager.nodes_cache.values()
+                 if node.server_type == PRIMARY]
+
+        for node in r.get_all_primaries():
+            assert node in nodes
+
 
 @skip_if_not_cluster_mode()
 class TestClusterRedisCommands:
@@ -386,7 +430,7 @@ class TestClusterRedisCommands:
             p.subscribe(channel)
             # Assert that each node returns that only one client is subscribed
             assert node.redis_connection.pubsub_numsub(channel) == \
-                   [(b_channel, 1)]
+                [(b_channel, 1)]
         # Assert that the cluster's pubsub_numsub function returns ALL clients
         # subscribed to this channel in the entire cluster
         assert r.pubsub_numsub(channel) == [(b_channel, len(nodes))]
@@ -404,3 +448,208 @@ class TestClusterRedisCommands:
         # Assert that the cluster's pubsub_numsub function returns ALL clients
         # subscribed to this channel in the entire cluster
         assert r.pubsub_numpat() == len(nodes)
+
+
+@skip_if_not_cluster_mode()
+class TestNodesManager:
+    def test_load_balancer(self, r):
+        n_manager = r.nodes_manager
+        lb = n_manager.get_read_load_balancer()
+        slot_1 = 1257
+        slot_2 = 8975
+        node_1 = ClusterNode(default_host, 6379, PRIMARY)
+        node_2 = ClusterNode(default_host, 6378, REPLICA)
+        node_3 = ClusterNode(default_host, 6377, REPLICA)
+        node_4 = ClusterNode(default_host, 6376, PRIMARY)
+        node_5 = ClusterNode(default_host, 6375, REPLICA)
+        n_manager.slots_cache = {
+            slot_1: [node_1, node_2, node_3],
+            slot_2: [node_4, node_5]
+        }
+        list1_size = len(n_manager.slots_cache[slot_1])
+        list2_size = len(n_manager.slots_cache[slot_2])
+        # slot 1
+        assert lb.get_server_index(slot_1, list1_size) == 0
+        assert lb.get_server_index(slot_1, list1_size) == 1
+        assert lb.get_server_index(slot_1, list1_size) == 2
+        assert lb.get_server_index(slot_1, list1_size) == 0
+        # slot 2
+        assert lb.get_server_index(slot_2, list2_size) == 0
+        assert lb.get_server_index(slot_2, list2_size) == 1
+        assert lb.get_server_index(slot_2, list2_size) == 0
+
+    def test_init_slots_cache_not_all_slots_covered(self):
+        """
+        Test that if not all slots are covered it should raise an exception
+        """
+        # Missing slot 5460
+        cluster_slots = [
+            [0, 5459, ['127.0.0.1', 7000], ['127.0.0.1', 7003]],
+            [5461, 10922, ['127.0.0.1', 7001],
+             ['127.0.0.1', 7004]],
+            [10923, 16383, ['127.0.0.1', 7002],
+             ['127.0.0.1', 7005]],
+        ]
+        with pytest.raises(RedisClusterException) as ex:
+            get_mocked_redis_client(host=default_host, port=default_port,
+                                    cluster_slots=cluster_slots)
+        assert str(ex.value).startswith(
+            "All slots are not covered after query all startup_nodes.")
+
+    def test_init_slots_cache_not_require_full_coverage(self):
+        """
+        When skip_full_coverage_check is set to True and not all slots are
+        covered, the cluster initialization should be successful
+        """
+        # Missing slot 5460
+        cluster_slots = [
+            [0, 5459, ['127.0.0.1', 7000], ['127.0.0.1', 7003]],
+            [5461, 10922, ['127.0.0.1', 7001],
+             ['127.0.0.1', 7004]],
+            [10923, 16383, ['127.0.0.1', 7002],
+             ['127.0.0.1', 7005]],
+        ]
+        r = get_mocked_redis_client(host=default_host, port=default_port,
+                                    cluster_slots=cluster_slots,
+                                    skip_full_coverage_check=True)
+
+        assert 5460 not in r.nodes_manager.slots_cache
+
+    def test_init_slots_cache(self):
+        """
+        Test that slots cache can in initialized and all slots are covered
+        """
+        good_slots_resp = [
+            [0, 5460, ['127.0.0.1', 7000], ['127.0.0.2', 7003]],
+            [5461, 10922, ['127.0.0.1', 7001], ['127.0.0.2', 7004]],
+            [10923, 16383, ['127.0.0.1', 7002], ['127.0.0.2', 7005]],
+        ]
+
+        r = get_mocked_redis_client(host=default_host, port=default_port,
+                                    cluster_slots=good_slots_resp)
+        n_manager = r.nodes_manager
+        assert len(n_manager.slots_cache) == REDIS_CLUSTER_HASH_SLOTS
+        for slot_info in good_slots_resp:
+            all_hosts = ['127.0.0.1', '127.0.0.2']
+            all_ports = [7000, 7001, 7002, 7003, 7004, 7005]
+            slot_start = slot_info[0]
+            slot_end = slot_info[1]
+            for i in range(slot_start, slot_end + 1):
+                assert len(n_manager.slots_cache[i]) == len(slot_info[2:])
+                assert n_manager.slots_cache[i][0].host in all_hosts
+                assert n_manager.slots_cache[i][1].host in all_hosts
+                assert n_manager.slots_cache[i][0].port in all_ports
+                assert n_manager.slots_cache[i][1].port in all_ports
+
+        assert len(n_manager.nodes_cache) == 6
+
+    def test_empty_startup_nodes(self):
+        """
+        It should not be possible to create a node manager with no nodes
+        specified
+        """
+        with pytest.raises(RedisClusterException):
+            NodesManager([])
+
+    def test_wrong_startup_nodes_type(self):
+        """
+        If something other then a list type itteratable is provided it should
+        fail
+        """
+        with pytest.raises(RedisClusterException):
+            NodesManager({})
+
+    def test_init_slots_cache_slots_collision(self, request):
+        """
+        Test that if 2 nodes do not agree on the same slots setup it should
+        raise an error. In this test both nodes will say that the first
+        slots block should be bound to different servers.
+        """
+        with patch.object(NodesManager,
+                          'create_redis_node') as create_redis_node:
+            def create_mocked_redis_node(host, port, **kwargs):
+                """
+                Helper function to return custom slots cache data from
+                different redis nodes
+                """
+                if port == 7000:
+                    result = [
+                        [
+                            0,
+                            5460,
+                            ['127.0.0.1', 7000],
+                            ['127.0.0.1', 7003],
+                        ],
+                        [
+                            5461,
+                            10922,
+                            ['127.0.0.1', 7001],
+                            ['127.0.0.1', 7004],
+                        ],
+                    ]
+
+                elif port == 7001:
+                    result = [
+                        [
+                            0,
+                            5460,
+                            ['127.0.0.1', 7001],
+                            ['127.0.0.1', 7003],
+                        ],
+                        [
+                            5461,
+                            10922,
+                            ['127.0.0.1', 7000],
+                            ['127.0.0.1', 7004],
+                        ],
+                    ]
+                else:
+                    result = []
+
+                r_node = Redis(
+                    host=host,
+                    port=port
+                )
+
+                orig_execute_command = r_node.execute_command
+
+                def execute_command(*args, **kwargs):
+                    if args[0] == 'CLUSTER SLOTS':
+                        return result
+                    elif args[1] == 'cluster-require-full-coverage':
+                        return {'cluster-require-full-coverage': 'yes'}
+                    else:
+                        return orig_execute_command(*args, **kwargs)
+
+                r_node.execute_command = execute_command
+                return r_node
+
+            create_redis_node.side_effect = create_mocked_redis_node
+
+            with pytest.raises(RedisClusterException) as ex:
+                node_1 = ClusterNode('127.0.0.1', 7000)
+                node_2 = ClusterNode('127.0.0.1', 7001)
+                RedisCluster(startup_nodes=[node_1, node_2])
+            assert str(ex.value).startswith(
+                "startup_nodes could not agree on a valid slots cache"), str(
+                ex.value)
+
+    def test_cluster_one_instance(self):
+        """
+        If the cluster exists of only 1 node then there is some hacks that must
+        be validated they work.
+        """
+        node = ClusterNode(default_host, default_port)
+        cluster_slots = [[0, 16383, ['', default_port]]]
+        r = get_mocked_redis_client(startup_nodes=[node],
+                                    cluster_slots=cluster_slots)
+
+        n = r.nodes_manager
+        assert len(n.nodes_cache) == 1
+        n_node = r.get_node(node_name=node.name)
+        assert n_node is not None
+        assert n_node == node
+        assert n_node.server_type == PRIMARY
+        assert len(n.slots_cache) == REDIS_CLUSTER_HASH_SLOTS
+        for i in range(0, REDIS_CLUSTER_HASH_SLOTS):
+            assert n.slots_cache[i] == [n_node]
