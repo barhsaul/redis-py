@@ -130,7 +130,7 @@ class TestRedisClusterObj:
                          ClusterNode(default_host, port_2)]
         cluster = get_mocked_redis_client(startup_nodes=startup_nodes)
         assert cluster.get_node(host=default_host, port=port_1) is not None \
-            and cluster.get_node(host=default_host, port=port_2) is not None
+               and cluster.get_node(host=default_host, port=port_2) is not None
 
     def test_empty_startup_nodes(self):
         """
@@ -360,7 +360,7 @@ class TestRedisClusterObj:
 
     def test_get_node_name(self):
         assert get_node_name(default_host, default_port) == \
-            "{0}:{1}".format(default_host, default_port)
+               "{0}:{1}".format(default_host, default_port)
 
     def test_all_nodes(self, r):
         """
@@ -430,7 +430,7 @@ class TestClusterRedisCommands:
             p.subscribe(channel)
             # Assert that each node returns that only one client is subscribed
             assert node.redis_connection.pubsub_numsub(channel) == \
-                [(b_channel, 1)]
+                   [(b_channel, 1)]
         # Assert that the cluster's pubsub_numsub function returns ALL clients
         # subscribed to this channel in the entire cluster
         assert r.pubsub_numsub(channel) == [(b_channel, len(nodes))]
@@ -653,3 +653,53 @@ class TestNodesManager:
         assert len(n.slots_cache) == REDIS_CLUSTER_HASH_SLOTS
         for i in range(0, REDIS_CLUSTER_HASH_SLOTS):
             assert n.slots_cache[i] == [n_node]
+
+    def test_init_with_down_node(self):
+        """
+        If I can't connect to one of the nodes, everything should still work.
+        But if I can't connect to any of the nodes, exception should be thrown.
+        """
+        with patch.object(NodesManager,
+                          'create_redis_node') as create_redis_node:
+            def create_mocked_redis_node(host, port, **kwargs):
+                if port == 7000:
+                    raise ConnectionError('mock connection error for 7000')
+
+                r_node = Redis(host=host, port=port, decode_responses=True)
+
+                def execute_command(*args, **kwargs):
+                    if args[0] == 'CLUSTER SLOTS':
+                        return [
+                            [
+                                0, 8191,
+                                ['127.0.0.1', 7001, 'node_1'],
+                            ],
+                            [
+                                8192, 16383,
+                                ['127.0.0.1', 7002, 'node_2'],
+                            ]
+                        ]
+
+                    elif args[1] == 'cluster-require-full-coverage':
+                        return {'cluster-require-full-coverage': 'yes'}
+
+                r_node.execute_command = execute_command
+
+                return r_node
+
+            create_redis_node.side_effect = create_mocked_redis_node
+
+            node_1 = ClusterNode('127.0.0.1', 7000)
+            node_2 = ClusterNode('127.0.0.1', 7001)
+
+            # If all startup nodes fail to connect, connection error should be
+            # thrown
+            with pytest.raises(RedisClusterException) as e:
+                RedisCluster(startup_nodes=[node_1])
+            assert 'Redis Cluster cannot be connected' in str(e.value)
+
+            # When at least one startup node is reachable, the cluster
+            # initialization should succeeds
+            rc = RedisCluster(startup_nodes=[node_1, node_2])
+            assert rc.get_node(host=default_host, port=7001) is not None
+            assert rc.get_node(host=default_host, port=7002) is not None

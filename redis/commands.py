@@ -3623,3 +3623,10 @@ class ClusterManagementCommands:
                                 client_types,))
             return self.execute_command('CLIENT LIST', b'TYPE', _type)
         return self.execute_command('CLIENT LIST')
+
+    def ping(self):
+        """
+        Ping the cluster's servers. Sent to all nodes.
+        Returns True if the ping was successful across all nodes.
+        """
+        return self.execute_command('PING')

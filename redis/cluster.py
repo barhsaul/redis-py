@@ -251,6 +251,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
                 "PUBSUB CHANNELS",
                 "PUBSUB NUMPAT",
                 "PUBSUB NUMSUB",
+                "PING"
             ],
             ALL_NODES,
         ),
@@ -324,6 +325,9 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
             "KEYS",
             "PUBSUB CHANNELS",
         ], merge_result),
+        list_keys_to_dict([
+            "PING",
+        ], lambda command, res: all(res.values())),
     )
 
     def __init__(
@@ -485,7 +489,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
         Initialize the connection, authenticate and select a database and send
          READONLY if it is set during object initialization.
         """
-        connection.set_parser_class(ClusterParser)
+        connection.set_parser(ClusterParser)
         connection.on_connect()
 
         if self.read_from_replicas:
@@ -1164,9 +1168,11 @@ class ClusterPubSub(PubSub):
          2. Selecting a node that handles the keyslot: If read_from_replicas is
             set to true, a replica can be selected.
         """
+        self.node = None
         connection_pool = None
         if host and port:
             node = redis_cluster.get_node(host=host, port=port)
+            self.node = node
         if node:
             if not isinstance(node, ClusterNode):
                 raise DataError("'node' must be a ClusterNode")
@@ -1199,6 +1205,7 @@ class ClusterPubSub(PubSub):
                 else:
                     # Get a random node
                     node = self.cluster.get_random_node()
+                self.node = node
                 redis_connection = self.cluster.get_redis_connection(node)
                 self.connection_pool = redis_connection.connection_pool
             self.connection = self.connection_pool.get_connection(
@@ -1210,3 +1217,10 @@ class ClusterPubSub(PubSub):
             self.connection.register_connect_callback(self.on_connect)
         connection = self.connection
         self._execute(connection, connection.send_command, *args)
+
+    def get_redis_connection(self):
+        """
+        Get the Redis connection of the pubsub connected node.
+        """
+        if self.node is not None:
+            return self.node.redis_connection

@@ -559,7 +559,7 @@ class Connection:
         self.redis_connect_func = redis_connect_func
         self._sock = None
         self._socket_read_size = socket_read_size
-        self.set_parser_class(parser_class)
+        self.set_parser(parser_class)
         self._connect_callbacks = []
         self._buffer_cutoff = 6000
 
@@ -589,7 +589,7 @@ class Connection:
     def clear_connect_callbacks(self):
         self._connect_callbacks = []
 
-    def set_parser_class(self, parser_class):
+    def set_parser(self, parser_class):
         self._parser = parser_class(socket_read_size=self._socket_read_size)
 
     def connect(self):
@@ -927,7 +927,7 @@ class UnixDomainSocketConnection(Connection):
         self.encoder = Encoder(encoding, encoding_errors, decode_responses)
         self._sock = None
         self._socket_read_size = socket_read_size
-        self.set_parser_class(parser_class)
+        self.set_parser(parser_class)
         self._connect_callbacks = []
         self._buffer_cutoff = 6000
 
