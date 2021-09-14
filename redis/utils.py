@@ -41,14 +41,13 @@ def safe_str(value):
 def dict_merge(*dicts):
     """
     Merge all provided dicts into 1 dict.
+    *dicts : `dict`
+        dictionaries to merge
     """
     merged = {}
 
     for d in dicts:
-        if not isinstance(d, dict):
-            raise ValueError('Value should be of dict type')
-        else:
-            merged.update(d)
+        merged.update(d)
 
     return merged
 
@@ -63,13 +62,12 @@ def merge_result(command, res):
 
     This command is used when sending a command to multiple nodes
     and they result from each node should be merged into a single list.
+
+    res : 'dict'
     """
-    if not isinstance(res, dict):
-        raise ValueError('Value should be of dict type')
+    result = set()
 
-    result = set([])
-
-    for _, v in res.items():
+    for v in res.values():
         for value in v:
             result.add(value)
 

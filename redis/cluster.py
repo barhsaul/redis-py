@@ -6,16 +6,21 @@ import warnings
 
 from collections import OrderedDict
 from redis.client import CaseInsensitiveDict, Redis, parse_info, PubSub
-from redis.commands import ClusterCommands, DataAccessCommands, \
+from redis.commands import (
+    ClusterCommands,
+    DataAccessCommands,
     ClusterManagementCommands
-from redis.connection import ClusterParser, ConnectionPool, Encoder, parse_url
+)
+from redis.connection import DefaultParser, ConnectionPool, Encoder, parse_url
 from redis.crc import key_slot
 from redis.exceptions import (
     AskError,
     BusyLoadingError,
+    ClusterCrossSlotError,
     ClusterDownError,
     ClusterError,
     DataError,
+    MasterDownError,
     MovedError,
     RedisClusterException,
     ResponseError,
@@ -23,8 +28,12 @@ from redis.exceptions import (
     TimeoutError,
     TryAgainError,
 )
-from redis.utils import dict_merge, list_keys_to_dict, merge_result, \
+from redis.utils import (
+    dict_merge,
+    list_keys_to_dict,
+    merge_result,
     str_if_bytes
+)
 
 
 def get_node_name(host, port):
@@ -46,9 +55,10 @@ def parse_pubsub_numsub(command, res, **options):
             except KeyError:
                 numsub_d[channel] = numsubbed
 
-    ret_numsub = []
-    for channel, numsub in numsub_d.items():
-        ret_numsub.append((channel, numsub))
+    ret_numsub = [
+        (channel, numsub)
+        for channel, numsub in numsub_d.items()
+    ]
     return ret_numsub
 
 
@@ -239,6 +249,18 @@ def cleanup_kwargs(**kwargs):
     return connection_kwargs
 
 
+class ClusterParser(DefaultParser):
+    EXCEPTION_CLASSES = dict_merge(
+        DefaultParser.EXCEPTION_CLASSES, {
+            'ASK': AskError,
+            'TRYAGAIN': TryAgainError,
+            'MOVED': MovedError,
+            'CLUSTERDOWN': ClusterDownError,
+            'CROSSSLOT': ClusterCrossSlotError,
+            'MASTERDOWN': MasterDownError,
+        })
+
+
 class RedisCluster(ClusterCommands, DataAccessCommands,
                    ClusterManagementCommands, object):
     RedisClusterRequestTTL = 16
@@ -343,21 +365,21 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
             **kwargs
     ):
         """
-        :startup_nodes:
+        :startup_nodes: 'list[ClusterNode]'
             List of nodes from which initial bootstrapping can be done
-        :host:
+        :host: 'str'
             Can be used to point to a startup node
-        :port:
+        :port: 'int'
             Can be used to point to a startup node
-        :skip_full_coverage_check:
+        :skip_full_coverage_check: 'bool'
             Skips the check of cluster-require-full-coverage config, useful for
             clusters without the CONFIG command (like aws)
-       :read_from_replicas:
+       :read_from_replicas: 'bool'
             Enable read from replicas in READONLY mode. You can read possibly
             stale data.
             When set to true, read commands will be assigned between the
             primary and its replications in a Round-Robin manner.
-        :cluster_error_retry_attempts:
+        :cluster_error_retry_attempts: 'int'
 
         :**kwargs:
             Extra arguments that will be sent into Redis instance when created
@@ -367,6 +389,10 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
             RedisClusterException:
                 - db (Redis do not support database SELECT in cluster mode)
         """
+
+        if startup_nodes is None:
+            startup_nodes = []
+
         if "db" in kwargs:
             # Argument 'db' is not possible to use in cluster mode
             raise RedisClusterException(
@@ -375,11 +401,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
 
         # Get the startup node/s
         from_url = False
-        if not startup_nodes:
-            startup_nodes = []
-        if host and port:
-            startup_nodes.append(ClusterNode(host, port))
-        elif url:
+        if url is not None:
             from_url = True
             url_options = parse_url(url)
             if "path" in url_options:
@@ -393,10 +415,18 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
                 )
             kwargs.update(url_options)
             startup_nodes.append(ClusterNode(kwargs['host'], kwargs['port']))
-        if not startup_nodes:
+        elif host is not None and port is not None:
+            startup_nodes.append(ClusterNode(host, port))
+        elif len(startup_nodes) == 0:
+            # No startup node was provided
             raise RedisClusterException(
                 "RedisCluster requires at least one node to discover the "
-                "cluster")
+                "cluster. Please provide one of the followings:\n"
+                "1. host and port, for example:\n"
+                " RedisCluster(host='localhost', port=6379)\n"
+                "2. list of startup nodes, for example:\n"
+                " RedisCluster(startup_nodes=[ClusterNode('localhost', 6379),"
+                " ClusterNode('localhost', 6378)])")
 
         # Update the connection arguments
         # Whenever a new connection is established, RedisCluster's on_connect
@@ -437,7 +467,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
         self.close()
 
     def disconnect_connection_pools(self):
-        for node in self.get_all_nodes():
+        for node in self.get_nodes():
             if node.redis_connection:
                 node.redis_connection.connection_pool.disconnect()
 
@@ -510,16 +540,16 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
     def get_node(self, node_name=None, host=None, port=None):
         return self.nodes_manager.get_node(node_name, host, port)
 
-    def get_all_primaries(self):
+    def get_primaries(self):
         return self.nodes_manager.get_nodes_by_server_type(PRIMARY)
 
-    def get_all_replicas(self):
+    def get_replicas(self):
         return self.nodes_manager.get_nodes_by_server_type(REPLICA)
 
     def get_random_node(self):
         return random.choice(list(self.nodes_manager.nodes_cache.values()))
 
-    def get_all_nodes(self):
+    def get_nodes(self):
         return list(self.nodes_manager.nodes_cache.values())
 
     def pubsub(self, node=None, host=None, port=None, **kwargs):
@@ -536,11 +566,11 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
         if node_flag == RANDOM:
             return [self.get_random_node()]
         elif node_flag == ALL_PRIMARIES:
-            return self.get_all_primaries()
+            return self.get_primaries()
         elif node_flag == ALL_REPLICAS:
-            return self.get_all_replicas()
+            return self.get_replicas()
         elif node_flag == ALL_NODES:
-            return self.get_all_nodes()
+            return self.get_nodes()
         else:
             # get the node that holds the key's slot
             slot = self.determine_slot(*args)
@@ -605,9 +635,6 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
         If it reaches the number of times, the command will raises
         ClusterDownException.
         """
-        if not args:
-            raise RedisClusterException("Unable to determine command to use")
-
         target_nodes = kwargs.pop("target_nodes", None)
         target_nodes_specified = target_nodes is not None
         if target_nodes_specified:
@@ -617,7 +644,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
             elif isinstance(target_nodes, dict):
                 # Supports dictionaries of the format {node_name: node}.
                 # It enables to execute commands with multi nodes as follows:
-                # rc.cluster_save_config(rc.get_all_primaries())
+                # rc.cluster_save_config(rc.get_primaries())
                 target_nodes = target_nodes.values()
         # If ClusterDownError/ConnectionError were thrown, the nodes
         # and slots cache were reinitialized. We will retry executing the
@@ -697,7 +724,6 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
                 raise
             except ConnectionError:
                 warnings.warn("ConnectionError")
-
                 # ConnectionError can also be raised if we couldn't get a
                 # connection from the pool before timing out, so check that
                 # this is an actual connection before attempting to disconnect.
@@ -732,7 +758,6 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
                 # reduce the frequency you can set this variable in the
                 # RedisCluster constructor.
                 warnings.warn("MovedError")
-
                 self.reinitialize_counter += 1
                 if self._should_reinitialized():
                     self.nodes_manager.initialize()
@@ -843,19 +868,17 @@ class NodesManager:
         self._moved_exception = None
         self.connection_kwargs = kwargs
         self.read_load_balancer = None
-        # Currently we do not support passing connection classes,
-        # we use ClusterConnection by default or SSLClusterConnection for SSL
         self.initialize()
 
     def get_node(self, node_name=None, host=None, port=None):
-        if node_name is None:
-            if not host or not port:
-                warnings.warn(
-                    "get_node requires one of the followings: "
-                    "1. node name "
-                    "2. host and port"
-                )
-                return None
+        if node_name is None and (host is None or port is None):
+            warnings.warn(
+                "get_node requires one of the followings: "
+                "1. node name "
+                "2. host and port"
+            )
+            return None
+        if host is not None and port is not None:
             if host == "localhost":
                 host = socket.gethostbyname(host)
             node_name = get_node_name(host=host, port=port)
@@ -901,27 +924,26 @@ class NodesManager:
         """
         Gets a node that servers this hash slot
         """
+        if self._moved_exception:
+            self._update_moved_slots()
+        if read_from_replicas:
+            # get the server index in a Round-Robin manner
+            node_idx = self.get_read_load_balancer().get_server_index(
+                slot, len(self.slots_cache[slot]))
+        elif (
+                server_type is None
+                or server_type == PRIMARY
+                or len(self.slots_cache[slot]) == 1
+        ):
+            # return a primary
+            node_idx = 0
+        else:
+            # return a replica
+            # randomly choose one of the replicas
+            node_idx = random.randint(
+                1, len(self.slots_cache[slot]) - 1)
         try:
-            if self._moved_exception:
-                self._update_moved_slots()
-            if read_from_replicas:
-                # get the server index in a Round-Robin manner
-                node_idx = self.get_read_load_balancer().get_server_index(
-                    slot, len(self.slots_cache[slot]))
-                target_node = self.slots_cache[slot][node_idx]
-            elif (
-                    server_type is None
-                    or server_type == PRIMARY
-                    or len(self.slots_cache[slot]) == 1
-            ):
-                # return a primary
-                target_node = self.slots_cache[slot][0]
-            else:
-                # return a replica
-                # randomly choose one of the replicas
-                replica_idx = random.randint(
-                    1, len(self.slots_cache[slot]) - 1)
-                target_node = self.slots_cache[slot][replica_idx]
+            target_node = self.slots_cache[slot][node_idx]
         except KeyError:
             raise SlotNotCoveredError(
                 'Slot "{0}" not covered by the cluster. '
@@ -938,7 +960,7 @@ class NodesManager:
         ]
 
     def get_read_load_balancer(self):
-        if not self.read_load_balancer:
+        if self.read_load_balancer is None:
             self.read_load_balancer = LoadBalancer(REDIS_CLUSTER_HASH_SLOTS)
         return self.read_load_balancer
 
@@ -1170,10 +1192,10 @@ class ClusterPubSub(PubSub):
         """
         self.node = None
         connection_pool = None
-        if host and port:
+        if host is not None and port is not None:
             node = redis_cluster.get_node(host=host, port=port)
             self.node = node
-        if node:
+        if node is not None:
             if not isinstance(node, ClusterNode):
                 raise DataError("'node' must be a ClusterNode")
             connection_pool = redis_cluster.get_redis_connection(node). \

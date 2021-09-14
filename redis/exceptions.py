@@ -87,20 +87,14 @@ class AuthenticationWrongNumberOfArgsError(ResponseError):
 
 
 class RedisClusterException(Exception):
-    """
-    """
     pass
 
 
 class ClusterError(RedisError):
-    """
-    """
     pass
 
 
 class ClusterDownError(ClusterError, ResponseError):
-    """
-    """
 
     def __init__(self, resp):
         self.args = (resp,)
@@ -128,28 +122,20 @@ class AskError(ResponseError):
 
 
 class TryAgainError(ResponseError):
-    """
-    """
 
     def __init__(self, *args, **kwargs):
         pass
 
 
 class ClusterCrossSlotError(ResponseError):
-    """
-    """
     message = "Keys in request don't hash to the same slot"
 
 
 class MovedError(AskError):
-    """
-    """
     pass
 
 
 class MasterDownError(ClusterDownError):
-    """
-    """
     pass
 
 

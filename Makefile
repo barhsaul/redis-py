@@ -9,9 +9,6 @@ dev:	base
 test:	dev
 		docker-compose run --rm test /redis-py/docker-entry.sh
 
-test-cluster:	dev
-		docker-compose run --rm test_cluster /redis-py/docker-entry.sh
-
 clean:
 		docker-compose stop
 		docker-compose rm -f
