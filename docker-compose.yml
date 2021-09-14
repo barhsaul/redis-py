@@ -2,11 +2,13 @@ version: "3.8"
 
 services:
   master:
+    container_name: redis-master
     build: docker/master
     ports:
       - "6379:6379"
 
   slave:
+    container_name: redis-slave
     build: docker/slave
     depends_on:
       - "master"
@@ -14,6 +16,7 @@ services:
       - "6380:6380"
 
   sentinel_1:
+    container_name: sentinel-1
     build: docker/sentinel_1
     depends_on:
       - "slave"
@@ -21,6 +24,7 @@ services:
       - "26379:26379"
 
   sentinel_2:
+    container_name: sentinel-2
     build: docker/sentinel_2
     depends_on:
       - "slave"
@@ -28,6 +32,7 @@ services:
       - "26380:26380"
 
   sentinel_3:
+    container_name: sentinel-3
     build: docker/sentinel_3
     depends_on:
       - "slave"
@@ -35,34 +40,39 @@ services:
       - "26381:26381"
 
   cluster_master_1:
+    container_name: cluster-master-1
     build: docker/cluster/master_1
     ports:
-      - "7000:7000"
+      - "16379:16379"
 
   cluster_master_2:
+    container_name: cluster-master-2
     build: docker/cluster/master_2
     ports:
-      - "7001:7001"
+      - "16380:16380"
 
   cluster_slave_1:
+    container_name: cluster-slave-1
     build: docker/cluster/slave_1
     depends_on:
       - "cluster_master_1"
     ports:
-      - "7002:7002"
+      - "16381:16381"
     environment:
       CLUSTER_MASTER_HOST: cluster_master_1
 
   cluster_slave_2:
+    container_name: cluster-slave-2
     build: docker/cluster/slave_2
     depends_on:
       - "cluster_master_2"
     ports:
-      - "7003:7003"
+      - "16382:16382"
     environment:
       CLUSTER_MASTER_HOST: cluster_master_2
 
   test:
+    container_name: test
     build: .
     depends_on:
       - "cluster_slave_2"
@@ -71,7 +81,7 @@ services:
       REDIS_MASTER_PORT: 6379
       DB: 9
       CLUSTER_MASTER_HOST: cluster_master_1
-      CLUSTER_MASTER_PORT: 7000
+      CLUSTER_MASTER_PORT: 16379
       CLUSTER_DB: 0
       CI:
       CI_BUILD_ID:
