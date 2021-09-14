@@ -29,7 +29,7 @@ default_cluster_slots = [
 ]
 
 
-def get_mocked_redis_client(*args, **kwargs):
+def get_mocked_redis_client(func=None, *args, **kwargs):
     """
     Return a stable RedisCluster object that have deterministic
     nodes and slots setup to remove the problem of different IP addresses
@@ -43,6 +43,8 @@ def get_mocked_redis_client(*args, **kwargs):
                 return mock_cluster_slots
             elif _args[1] == 'cluster-require-full-coverage':
                 return {'cluster-require-full-coverage': 'yes'}
+            elif func is not None:
+                return func()
             else:
                 return execute_command_mock(*_args, **_kwargs)
 
@@ -52,7 +54,7 @@ def get_mocked_redis_client(*args, **kwargs):
 
 
 def find_node_ip_based_on_port(cluster_client, port):
-    for node in cluster_client.get_all_nodes():
+    for node in cluster_client.get_nodes():
         if node.port == port:
             return node.host
 
@@ -74,18 +76,18 @@ def moved_redirection_helper(request, failover=False):
         3. the redirected node's server type updated to 'primary'
         4. the server type of the previous slot owner updated to 'replica'
         """
-    r = _get_client(RedisCluster, request, flushdb=False)
+    rc = _get_client(RedisCluster, request, flushdb=False)
     slot = 12182
     redirect_node = None
     # Get the current primary that holds this slot
-    prev_primary = r.nodes_manager.get_node_from_slot(slot)
+    prev_primary = rc.nodes_manager.get_node_from_slot(slot)
     if failover:
-        if len(r.nodes_manager.slots_cache[slot]) < 2:
+        if len(rc.nodes_manager.slots_cache[slot]) < 2:
             raise RedisClusterException("This test requires to have a replica")
-        redirect_node = r.nodes_manager.slots_cache[slot][1]
+        redirect_node = rc.nodes_manager.slots_cache[slot][1]
     else:
         # Use one of the primaries to be the redirected node
-        redirect_node = r.get_all_primaries()[0]
+        redirect_node = rc.get_primaries()[0]
     r_host = redirect_node.host
     r_port = redirect_node.port
     with patch.object(Redis, 'parse_response') as parse_response:
@@ -100,11 +102,11 @@ def moved_redirection_helper(request, failover=False):
             raise MovedError("{0} {1}:{2}".format(slot, r_host, r_port))
 
         parse_response.side_effect = moved_redirect_effect
-        assert r.execute_command("SET", "foo", "bar") == "MOCK_OK"
-        slot_primary = r.nodes_manager.slots_cache[slot][0]
+        assert rc.execute_command("SET", "foo", "bar") == "MOCK_OK"
+        slot_primary = rc.nodes_manager.slots_cache[slot][0]
         assert slot_primary == redirect_node
         if failover:
-            assert r.get_node(host=r_host, port=r_port).server_type == PRIMARY
+            assert rc.get_node(host=r_host, port=r_port).server_type == PRIMARY
             assert prev_primary.server_type == REPLICA
 
 
@@ -166,15 +168,8 @@ class TestRedisClusterObj:
 
     def test_execute_command_errors(self, r):
         """
-        If no command is given to `_determine_nodes` then exception
-        should be raised.
-
         Test that if no key is provided then exception should be raised.
         """
-        with pytest.raises(RedisClusterException) as ex:
-            r.execute_command()
-        assert str(ex.value).startswith("Unable to determine command to use")
-
         with pytest.raises(RedisClusterException) as ex:
             r.execute_command("GET")
         assert str(ex.value).startswith("No way to dispatch this command to "
@@ -190,7 +185,7 @@ class TestRedisClusterObj:
 
         Important thing to verify is that it tries to talk to the second node.
         """
-        redirect_node = r.get_all_nodes()[0]
+        redirect_node = r.get_nodes()[0]
         with patch.object(Redis, 'parse_response') as parse_response:
             def ask_redirect_effect(connection, *args, **options):
                 def ok_response(connection, *args, **options):
@@ -282,14 +277,14 @@ class TestRedisClusterObj:
 
                     rc = _get_client(
                         RedisCluster, request, flushdb=False)
-                    assert len(rc.get_all_nodes()) == 1
+                    assert len(rc.get_nodes()) == 1
                     assert rc.get_node(node_7006.name) is not None
 
                     rc.get('foo')
 
                     # Cluster should now point to 7007, and there should be
                     # one failed and one successful call
-                    assert len(rc.get_all_nodes()) == 1
+                    assert len(rc.get_nodes()) == 1
                     assert rc.get_node(node_7007.name) is not None
                     assert rc.get_node(node_7006.name) is None
                     assert parse_response.failed_calls == 1
@@ -368,7 +363,7 @@ class TestRedisClusterObj:
         """
         nodes = [node for node in r.nodes_manager.nodes_cache.values()]
 
-        for i, node in enumerate(r.get_all_nodes()):
+        for i, node in enumerate(r.get_nodes()):
             assert node in nodes
 
     def test_all_nodes_masters(self, r):
@@ -379,8 +374,52 @@ class TestRedisClusterObj:
         nodes = [node for node in r.nodes_manager.nodes_cache.values()
                  if node.server_type == PRIMARY]
 
-        for node in r.get_all_primaries():
+        for node in r.get_primaries():
             assert node in nodes
+
+    @pytest.mark.filterwarnings("ignore:ClusterDownError")
+    def test_cluster_down_overreaches_retry_attempts(self):
+        """
+        When ClusterDownError is thrown, test that we retry executing the
+        command as many times as configured in cluster_error_retry_attempts
+        and then raise the exception
+        """
+        with patch.object(RedisCluster, '_execute_command') as execute_command:
+            def raise_cluster_down_error(target_node, *args, **kwargs):
+                execute_command.failed_calls += 1
+                raise ClusterDownError(
+                    'CLUSTERDOWN The cluster is down. Use CLUSTER INFO for '
+                    'more information')
+
+            execute_command.side_effect = raise_cluster_down_error
+
+            rc = get_mocked_redis_client(host=default_host, port=default_port)
+
+            with pytest.raises(ClusterDownError):
+                rc.get("bar")
+                assert execute_command.failed_calls == \
+                       rc.cluster_error_retry_attempts
+
+    @pytest.mark.filterwarnings("ignore:ConnectionError")
+    def test_connection_error_overreaches_retry_attempts(self):
+        """
+        When ConnectionError is thrown, test that we retry executing the
+        command as many times as configured in cluster_error_retry_attempts
+        and then raise the exception
+        """
+        with patch.object(RedisCluster, '_execute_command') as execute_command:
+            def raise_conn_error(target_node, *args, **kwargs):
+                execute_command.failed_calls += 1
+                raise ConnectionError()
+
+            execute_command.side_effect = raise_conn_error
+
+            rc = get_mocked_redis_client(host=default_host, port=default_port)
+
+            with pytest.raises(ConnectionError):
+                rc.get("bar")
+                assert execute_command.failed_calls == \
+                       rc.cluster_error_retry_attempts
 
 
 @skip_if_not_cluster_mode()
@@ -399,7 +438,7 @@ class TestClusterRedisCommands:
         assert r.get('unicode_string').decode('utf-8') == unicode_string
 
     def test_pubsub_channels_merge_results(self, r):
-        nodes = r.get_all_nodes()
+        nodes = r.get_nodes()
         channels = []
         i = 0
         for node in nodes:
@@ -420,7 +459,7 @@ class TestClusterRedisCommands:
         assert result == channels
 
     def test_pubsub_numsub_merge_results(self, r):
-        nodes = r.get_all_nodes()
+        nodes = r.get_nodes()
         channel = "foo"
         b_channel = channel.encode('utf-8')
         for node in nodes:
@@ -436,7 +475,7 @@ class TestClusterRedisCommands:
         assert r.pubsub_numsub(channel) == [(b_channel, len(nodes))]
 
     def test_pubsub_numpat_merge_results(self, r):
-        nodes = r.get_all_nodes()
+        nodes = r.get_nodes()
         pattern = "foo*"
         for node in nodes:
             # We will create different pubsub clients where each one is
@@ -509,11 +548,11 @@ class TestNodesManager:
             [10923, 16383, ['127.0.0.1', 7002],
              ['127.0.0.1', 7005]],
         ]
-        r = get_mocked_redis_client(host=default_host, port=default_port,
-                                    cluster_slots=cluster_slots,
-                                    skip_full_coverage_check=True)
+        rc = get_mocked_redis_client(host=default_host, port=default_port,
+                                     cluster_slots=cluster_slots,
+                                     skip_full_coverage_check=True)
 
-        assert 5460 not in r.nodes_manager.slots_cache
+        assert 5460 not in rc.nodes_manager.slots_cache
 
     def test_init_slots_cache(self):
         """
@@ -525,9 +564,9 @@ class TestNodesManager:
             [10923, 16383, ['127.0.0.1', 7002], ['127.0.0.2', 7005]],
         ]
 
-        r = get_mocked_redis_client(host=default_host, port=default_port,
-                                    cluster_slots=good_slots_resp)
-        n_manager = r.nodes_manager
+        rc = get_mocked_redis_client(host=default_host, port=default_port,
+                                     cluster_slots=good_slots_resp)
+        n_manager = rc.nodes_manager
         assert len(n_manager.slots_cache) == REDIS_CLUSTER_HASH_SLOTS
         for slot_info in good_slots_resp:
             all_hosts = ['127.0.0.1', '127.0.0.2']
@@ -641,12 +680,12 @@ class TestNodesManager:
         """
         node = ClusterNode(default_host, default_port)
         cluster_slots = [[0, 16383, ['', default_port]]]
-        r = get_mocked_redis_client(startup_nodes=[node],
-                                    cluster_slots=cluster_slots)
+        rc = get_mocked_redis_client(startup_nodes=[node],
+                                     cluster_slots=cluster_slots)
 
-        n = r.nodes_manager
+        n = rc.nodes_manager
         assert len(n.nodes_cache) == 1
-        n_node = r.get_node(node_name=node.name)
+        n_node = rc.get_node(node_name=node.name)
         assert n_node is not None
         assert n_node == node
         assert n_node.server_type == PRIMARY

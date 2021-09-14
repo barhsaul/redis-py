@@ -32,13 +32,6 @@ from redis.utils import HIREDIS_AVAILABLE, str_if_bytes, dict_merge
 from redis.backoff import NoBackoff
 from redis.retry import Retry
 
-# rediscluster imports
-from .exceptions import (
-    AskError, MovedError,
-    TryAgainError, ClusterDownError, ClusterCrossSlotError,
-    MasterDownError,
-)
-
 try:
     import ssl
     ssl_available = True
@@ -503,20 +496,6 @@ else:
     DefaultParser = PythonParser
 
 
-class ClusterParser(DefaultParser):
-    """
-    """
-    EXCEPTION_CLASSES = dict_merge(
-        DefaultParser.EXCEPTION_CLASSES, {
-            'ASK': AskError,
-            'TRYAGAIN': TryAgainError,
-            'MOVED': MovedError,
-            'CLUSTERDOWN': ClusterDownError,
-            'CROSSSLOT': ClusterCrossSlotError,
-            'MASTERDOWN': MasterDownError,
-        })
-
-
 class Connection:
     "Manages TCP communication to and from a Redis server"
 
@@ -606,12 +585,12 @@ class Connection:
 
         self._sock = sock
         try:
-            if self.redis_connect_func is not None:
-                # Use the redis_connect_func function pointer if it was passed
-                self.redis_connect_func(self)
-            else:
+            if self.redis_connect_func is None:
                 # Use the default on_connect function
                 self.on_connect()
+            else:
+                # Use the passed function redis_connect_func
+                self.redis_connect_func(self)
         except RedisError:
             # clean up after any error in on_connect
             self.disconnect()
