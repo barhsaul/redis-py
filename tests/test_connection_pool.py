@@ -26,7 +26,6 @@ class DummyConnection:
         return False
 
 
-@skip_if_cluster_mode()
 class TestConnectionPool:
     def get_pool(self, connection_kwargs=None, max_connections=None,
                  connection_class=redis.Connection):
@@ -45,15 +44,15 @@ class TestConnectionPool:
         assert isinstance(connection, DummyConnection)
         assert connection.kwargs == connection_kwargs
 
-    def test_multiple_connections(self, master_host):
-        connection_kwargs = {'host': master_host}
+    def test_multiple_connections(self, master_host, master_port):
+        connection_kwargs = {'host': master_host, 'port': master_port}
         pool = self.get_pool(connection_kwargs=connection_kwargs)
         c1 = pool.get_connection('_')
         c2 = pool.get_connection('_')
         assert c1 != c2
 
-    def test_max_connections(self, master_host):
-        connection_kwargs = {'host': master_host}
+    def test_max_connections(self, master_host, master_port):
+        connection_kwargs = {'host': master_host, 'port': master_port}
         pool = self.get_pool(max_connections=2,
                              connection_kwargs=connection_kwargs)
         pool.get_connection('_')
@@ -61,8 +60,9 @@ class TestConnectionPool:
         with pytest.raises(redis.ConnectionError):
             pool.get_connection('_')
 
-    def test_reuse_previously_released_connection(self, master_host):
-        connection_kwargs = {'host': master_host}
+    def test_reuse_previously_released_connection(self, master_host,
+                                                  master_port):
+        connection_kwargs = {'host': master_host, 'port': master_port}
         pool = self.get_pool(connection_kwargs=connection_kwargs)
         c1 = pool.get_connection('_')
         pool.release(c1)
@@ -95,7 +95,6 @@ class TestConnectionPool:
         assert repr(pool) == expected
 
 
-@skip_if_cluster_mode()
 class TestBlockingConnectionPool:
     def get_pool(self, connection_kwargs=None, max_connections=10, timeout=20):
         connection_kwargs = connection_kwargs or {}
@@ -180,7 +179,6 @@ class TestBlockingConnectionPool:
         assert repr(pool) == expected
 
 
-@skip_if_cluster_mode()
 class TestConnectionPoolURLParsing:
     def test_hostname(self):
         pool = redis.ConnectionPool.from_url('redis://my.host')
@@ -345,7 +343,6 @@ class TestConnectionPoolURLParsing:
         )
 
 
-@skip_if_cluster_mode()
 class TestConnectionPoolUnixSocketURLParsing:
     def test_defaults(self):
         pool = redis.ConnectionPool.from_url('unix:///socket')
@@ -431,7 +428,6 @@ class TestConnectionPoolUnixSocketURLParsing:
         }
 
 
-@skip_if_cluster_mode()
 @pytest.mark.skipif(not ssl_available, reason="SSL not installed")
 class TestSSLConnectionURLParsing:
     def test_host(self):
@@ -469,7 +465,7 @@ class TestSSLConnectionURLParsing:
         assert pool.get_connection('_').check_hostname is True
 
 
-@skip_if_cluster_mode()
+@pytest.mark.filterwarnings("ignore:BaseException")
 class TestConnection:
     def test_on_connect_error(self):
         """
@@ -486,6 +482,7 @@ class TestConnection:
         assert len(pool._available_connections) == 1
         assert not pool._available_connections[0]._sock
 
+    @skip_if_cluster_mode()
     @skip_if_server_version_lt('2.8.8')
     def test_busy_loading_disconnects_socket(self, r):
         """
@@ -496,6 +493,7 @@ class TestConnection:
             r.execute_command('DEBUG', 'ERROR', 'LOADING fake message')
         assert not r.connection._sock
 
+    @skip_if_cluster_mode()
     @skip_if_server_version_lt('2.8.8')
     def test_busy_loading_from_pipeline_immediate_command(self, r):
         """
@@ -511,6 +509,7 @@ class TestConnection:
         assert len(pool._available_connections) == 1
         assert not pool._available_connections[0]._sock
 
+    @skip_if_cluster_mode()
     @skip_if_server_version_lt('2.8.8')
     def test_busy_loading_from_pipeline(self, r):
         """

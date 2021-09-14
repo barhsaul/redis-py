@@ -240,6 +240,13 @@ def master_host(request):
     yield parts.hostname
 
 
+@pytest.fixture(scope="session")
+def master_port(request):
+    url = request.config.getoption("--redis-url")
+    parts = urlparse(url)
+    yield parts.port
+
+
 def wait_for_command(client, monitor, command):
     # issue a command with a key name that's local to this process.
     # if we find a command with our key before the command we're waiting
