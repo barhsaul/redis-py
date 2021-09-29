@@ -508,6 +508,21 @@ def parse_geosearch_generic(response, **options):
     ]
 
 
+def parse_command(response, **options):
+    commands = {}
+    for command in response:
+        cmd_dict = {}
+        cmd_name = str_if_bytes(command[0])
+        cmd_dict['name'] = cmd_name
+        cmd_dict['arity'] = str_if_bytes(command[1])
+        cmd_dict['flags'] = [str_if_bytes(flag) for flag in command[2]]
+        cmd_dict['first_key_pos'] = command[3]
+        cmd_dict['last_key_pos'] = command[4]
+        cmd_dict['step_count'] = command[5]
+        commands[cmd_name] = cmd_dict
+    return commands
+
+
 def parse_pubsub_numsub(response, **options):
     return list(zip(response[0::2], response[1::2]))
 
@@ -692,7 +707,7 @@ class Redis(Commands, object):
         'CLUSTER SET-CONFIG-EPOCH': bool_ok,
         'CLUSTER SETSLOT': bool_ok,
         'CLUSTER SLAVES': parse_cluster_nodes,
-        'COMMAND': int,
+        'COMMAND': parse_command,
         'COMMAND COUNT': int,
         'CONFIG GET': parse_config_get,
         'CONFIG RESETSTAT': bool_ok,
