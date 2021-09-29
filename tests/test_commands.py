@@ -8,7 +8,7 @@ from string import ascii_letters
 
 from redis.client import parse_info
 from redis import exceptions
-
+from redis.commands import CommandsParser
 from .conftest import (
     _get_client,
     REDIS_6_VERSION,
@@ -3623,3 +3623,44 @@ class TestBinarySave:
         timestamp = 1349673917.939762
         r.zadd('a', {'a1': timestamp})
         assert r.zscore('a', 'a1') == timestamp
+
+
+class TestCommandsParser:
+    def test_init_commands(self, r):
+        commands_parser = CommandsParser(r)
+        assert commands_parser.commands is not None
+        assert 'get' in commands_parser.commands
+
+    def test_get_keys_predetermined_key_location(self, r):
+        commands_parser = CommandsParser(r)
+        args1 = ['GET', 'foo']
+        args2 = ['OBJECT', 'encoding', 'foo']
+        args3 = ['MGET', 'foo', 'bar', 'foobar']
+        assert commands_parser.get_keys(*args1) == ['foo']
+        assert commands_parser.get_keys(*args2) == ['foo']
+        assert commands_parser.get_keys(*args3) == ['foo', 'bar', 'foobar']
+
+    def test_get_keys_no_predetermined_key_location(self, r):
+        commands_parser = CommandsParser(r)
+        args1 = ['EVAL', 'return {KEYS[1],KEYS[2],ARGV[1],ARGV[2]}', 2, 'key1',
+                 'key2', 'first', 'second']
+        args2 = ['XREAD', 'COUNT', 2, b'STREAMS', 'mystream', 'writers', 0, 0]
+        args3 = ['ZUNIONSTORE', 'out', 2, 'zset1', 'zset2', 'WEIGHTS', 2, 3]
+        args4 = ['GEORADIUS', 'Sicily', 15, 37, 200, 'km', 'WITHCOORD',
+                 b'STORE', 'out']
+        args5 = ['MEMORY USAGE', 'foo']
+        args6 = ['MIGRATE', '192.168.1.34', 6379, "", 0, 5000, b'KEYS',
+                 'key1', 'key2', 'key3']
+        args7 = ['MIGRATE', '192.168.1.34', 6379, "key1", 0, 5000]
+        args8 = ['STRALGO', 'LCS', 'STRINGS', 'string_a', 'string_b']
+        args9 = ['STRALGO', 'LCS', 'KEYS', 'key1', 'key2']
+
+        assert commands_parser.get_keys(*args1) == ['key1', 'key2']
+        assert commands_parser.get_keys(*args2) == ['mystream', 'writers']
+        assert commands_parser.get_keys(*args3) == ['out', 'zset1', 'zset2']
+        assert commands_parser.get_keys(*args4) == ['Sicily', 'out']
+        assert commands_parser.get_keys(*args5) == ['foo']
+        assert commands_parser.get_keys(*args6) == ['key1', 'key2', 'key3']
+        assert commands_parser.get_keys(*args7) == ['key1']
+        assert commands_parser.get_keys(*args8) is None
+        assert commands_parser.get_keys(*args9) == ['key1', 'key2']
