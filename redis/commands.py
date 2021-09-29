@@ -9,6 +9,125 @@ from redis.exceptions import (
     NoScriptError,
     RedisError,
 )
+from redis.utils import str_if_bytes
+
+
+class CommandsParser:
+    def __init__(self, redis_connection):
+        self.commands = redis_connection.execute_command("COMMAND")
+
+    # As soon as this PR is merged into Redis, we should reimplement
+    # our logic to use COMMAND INFO changes to determine the key positions
+    # https://github.com/redis/redis/pull/8324
+    def get_keys(self, *args):
+        """
+        Get the keys from the passed command
+        """
+        if len(args) < 2:
+            # The command has no keys in it
+            return None
+
+        cmd_name = args[0].lower()
+        if len(cmd_name.split()) > 1:
+            # we need to take only the main command, e.g. 'memory' for
+            # 'memory usage'
+            cmd_name = cmd_name.split()[0]
+        if cmd_name not in self.commands:
+            warnings.warn("{0} command doesn't exist in Redis commands".
+                          format(cmd_name.upper()))
+            return None
+
+        command = self.commands.get(cmd_name)
+        if 'movablekeys' not in command['flags']:
+            last_key_pos = command['last_key_pos']
+            if last_key_pos == -1:
+                last_key_pos = len(args) - 1
+            keys_pos = list(range(command['first_key_pos'], last_key_pos + 1,
+                                  command['step_count']))
+            keys = [args[pos] for pos in keys_pos]
+        else:
+            keys = self.get_keys_complex(*args)
+
+        return keys
+
+    def get_keys_complex(self, *args):
+        """
+        Get the keys from command that has no predetermined key locations
+            eval
+            evalsha
+            georadius
+            georadius_ro
+            georadiusbymember
+            georadiusbymember_ro
+            memory
+            migrate
+            sort
+            stralgo
+            xread
+            xreadgroup
+            zinterstore
+            zunionstore
+        """
+        if len(args) < 2:
+            # The command has no keys in it
+            return None
+        args = [str_if_bytes(arg) for arg in args]
+        command = args[0]
+        if command in ['EVAL', 'EVALSHA']:
+            # format example:
+            # EVAL "return {KEYS[1],KEYS[2],ARGV[1]}" 2 key1 key2 first
+            numkeys = args[2]
+            keys = list(args[3: 3 + numkeys])
+        elif command in ['XREADGROUP', 'XREAD']:
+            # format example:
+            # XREAD COUNT 2 STREAMS mystream writers 0-0 0-0
+            stream_idx = args.index('STREAMS')
+            keys_ids = list(args[stream_idx + 1:])
+            idx_split = len(keys_ids) // 2
+            keys = keys_ids[: idx_split]
+        elif command in ['ZUNION', 'ZINTER']:
+            # format example:
+            # ZUNION 2 zset1 zset2
+            numkeys = args[1]
+            keys = list(args[2: 2 + numkeys])
+        elif command in ['ZUNIONSTORE', 'ZINTERSTORE']:
+            # format example:
+            # ZUNIONSTORE out 2 zset1 zset2 WEIGHTS 2 3
+            keys = [args[1]]
+            # destination key
+            numkeys = args[2]
+            keys.extend(args[3: 3 + numkeys])
+        elif command in ['GEORADIUS', 'GEORADIUS_RO', 'GEORADIUSBYMEMBER',
+                         'georadiusbymember_ro', 'SORT']:
+            # example command:
+            # GEORADIUS Sicily 15 37 200 km WITHCOORD STORE out
+            keys = [args[1]]
+            if 'STORE' in args:
+                store_idx = args.index('STORE')
+                keys.append(args[store_idx + 1])
+            if 'STOREDIST' in args:
+                storedist_idx = args.index('STOREDIST')
+                keys.append(args[storedist_idx + 1])
+        elif command == 'MEMORY USAGE':
+            keys = [args[1]]
+        elif command == 'MIGRATE':
+            # format exapmle:
+            # MIGRATE 192.168.1.34 6379 "" 0 5000 KEYS key1 key2 key3
+            if args[3] == "":
+                keys_idx = args.index('KEYS')
+                keys = list(args[keys_idx + 1:])
+            else:
+                keys = [args[3]]
+        elif command == 'STRALGO':
+            # format example:
+            # STRALGO LCS STRINGS <string_a> <string_b> | KEYS <key_a> <key_b>
+            if args[2] != 'KEYS':
+                keys = None
+            else:
+                keys = list(args[3:5])
+        else:
+            keys = None
+        return keys
 
 
 def list_or_args(keys, args):
@@ -3280,7 +3399,7 @@ class ClusterManagementCommands:
             client_types = ('normal', 'master', 'replica', 'pubsub')
             if str(_type).lower() not in client_types:
                 raise DataError("CLIENT LIST _type must be one of %r" % (
-                                client_types,))
+                    client_types,))
             return self.execute_command('CLIENT LIST', b'TYPE', _type)
         return self.execute_command('CLIENT LIST')
 

@@ -9,7 +9,8 @@ from redis.client import CaseInsensitiveDict, Redis, parse_info, PubSub
 from redis.commands import (
     ClusterCommands,
     DataAccessCommands,
-    ClusterManagementCommands
+    ClusterManagementCommands,
+    CommandsParser
 )
 from redis.connection import DefaultParser, ConnectionPool, Encoder, parse_url
 from redis.crc import key_slot
@@ -299,6 +300,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
                 "CLUSTER REPLICAS",
                 "CLUSTER SLOTS",
                 "RANDOMKEY",
+                "COMMAND",
             ],
             RANDOM,
         ),
@@ -456,6 +458,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
             Redis.RESPONSE_CALLBACKS,
             self.__class__.CLUSTER_COMMANDS_RESPONSE_CALLBACKS))
         self.result_callbacks = self.__class__.RESULT_CALLBACKS
+        self.commands_parser = CommandsParser(self)
 
     def __enter__(self):
         return self
@@ -606,23 +609,24 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
         """
         figure out what slot based on command and args
         """
-        if len(args) <= 1:
+        keys = self.commands_parser.get_keys(*args)
+        if keys is None or len(keys) == 0:
             raise RedisClusterException(
                 "No way to dispatch this command to Redis Cluster. "
-                "Missing key."
+                "Missing key. command: {0}".format(args)
             )
-        # @barshaul decide on the implementation of finding key positions in
-        # commands which have a more complicated scheme e.g. 'EVAL', 'EVALSHA',
-        # 'XREADGROUP', 'XREAD', 'XADD'
 
-        command = args[0]
-        key = args[1]
-
-        # OBJECT command uses a special keyword as first positional argument
-        if command == "OBJECT":
-            key = args[2]
-
-        return self.keyslot(key)
+        if len(keys) > 1:
+            # multi-key command, we need to make sure all keys are mapped to
+            # the same slot
+            slots = {self.keyslot(key) for key in keys}
+            if len(slots) != 1:
+                raise RedisClusterException("{0} - all keys must map to the "
+                                            "same key slot".format(args[0]))
+            return slots.pop()
+        else:
+            # single key command
+            return self.keyslot(keys[0])
 
     def execute_command(self, *args, **kwargs):
         """
