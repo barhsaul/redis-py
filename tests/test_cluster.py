@@ -41,6 +41,10 @@ def get_mocked_redis_client(func=None, *args, **kwargs):
             if _args[0] == 'CLUSTER SLOTS':
                 mock_cluster_slots = cluster_slots
                 return mock_cluster_slots
+            elif _args[0] == 'COMMAND':
+                return {'get': {'name': 'get', 'arity': 2, 'flags':
+                                ['readonly', 'fast'], 'first_key_pos': 1,
+                                'last_key_pos': 1, 'step_count': 1}}
             elif _args[1] == 'cluster-require-full-coverage':
                 return {'cluster-require-full-coverage': 'yes'}
             elif func is not None:
@@ -132,7 +136,7 @@ class TestRedisClusterObj:
                          ClusterNode(default_host, port_2)]
         cluster = get_mocked_redis_client(startup_nodes=startup_nodes)
         assert cluster.get_node(host=default_host, port=port_1) is not None \
-               and cluster.get_node(host=default_host, port=port_2) is not None
+            and cluster.get_node(host=default_host, port=port_2) is not None
 
     def test_empty_startup_nodes(self):
         """
@@ -355,7 +359,7 @@ class TestRedisClusterObj:
 
     def test_get_node_name(self):
         assert get_node_name(default_host, default_port) == \
-               "{0}:{1}".format(default_host, default_port)
+            "{0}:{1}".format(default_host, default_port)
 
     def test_all_nodes(self, r):
         """
@@ -398,7 +402,7 @@ class TestRedisClusterObj:
             with pytest.raises(ClusterDownError):
                 rc.get("bar")
                 assert execute_command.failed_calls == \
-                       rc.cluster_error_retry_attempts
+                    rc.cluster_error_retry_attempts
 
     @pytest.mark.filterwarnings("ignore:ConnectionError")
     def test_connection_error_overreaches_retry_attempts(self):
@@ -419,7 +423,7 @@ class TestRedisClusterObj:
             with pytest.raises(ConnectionError):
                 rc.get("bar")
                 assert execute_command.failed_calls == \
-                       rc.cluster_error_retry_attempts
+                    rc.cluster_error_retry_attempts
 
 
 @skip_if_not_cluster_mode()
@@ -469,7 +473,7 @@ class TestClusterRedisCommands:
             p.subscribe(channel)
             # Assert that each node returns that only one client is subscribed
             assert node.redis_connection.pubsub_numsub(channel) == \
-                   [(b_channel, 1)]
+                [(b_channel, 1)]
         # Assert that the cluster's pubsub_numsub function returns ALL clients
         # subscribed to this channel in the entire cluster
         assert r.pubsub_numsub(channel) == [(b_channel, len(nodes))]
@@ -718,7 +722,8 @@ class TestNodesManager:
                                 ['127.0.0.1', 7002, 'node_2'],
                             ]
                         ]
-
+                    elif args[0] == 'COMMAND':
+                        return {}
                     elif args[1] == 'cluster-require-full-coverage':
                         return {'cluster-require-full-coverage': 'yes'}
 
