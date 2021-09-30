@@ -13,8 +13,17 @@ from redis.utils import str_if_bytes
 
 
 class CommandsParser:
+    DEFAULT_KEY_POS = 1
+
     def __init__(self, redis_connection):
-        self.commands = redis_connection.execute_command("COMMAND")
+        self.initialized = False
+        self.commands = {}
+        self.initialize(redis_connection)
+
+    def initialize(self, r):
+        if r is not None:
+            self.commands = r.execute_command("COMMAND")
+            self.initialized = True
 
     # As soon as this PR is merged into Redis, we should reimplement
     # our logic to use COMMAND INFO changes to determine the key positions
@@ -27,6 +36,10 @@ class CommandsParser:
             # The command has no keys in it
             return None
 
+        if not self.initialized:
+            # return the argument in the default position for keys
+            return [args[__class__.DEFAULT_KEY_POS]]
+
         cmd_name = args[0].lower()
         if len(cmd_name.split()) > 1:
             # we need to take only the main command, e.g. 'memory' for
@@ -38,7 +51,13 @@ class CommandsParser:
             return None
 
         command = self.commands.get(cmd_name)
-        if 'movablekeys' not in command['flags']:
+        if 'movablekeys' not in command['flags'] and 'pubsub' not in \
+                command['flags']:
+            if command['step_count'] == 0 and command['first_key_pos'] == 0 \
+                    and command['last_key_pos'] == 0:
+                # We don't have further info, return the argument in the
+                # default position for keys
+                return [args[__class__.DEFAULT_KEY_POS]]
             last_key_pos = command['last_key_pos']
             if last_key_pos == -1:
                 last_key_pos = len(args) - 1
@@ -108,10 +127,12 @@ class CommandsParser:
             if 'STOREDIST' in args:
                 storedist_idx = args.index('STOREDIST')
                 keys.append(args[storedist_idx + 1])
-        elif command == 'MEMORY USAGE':
+        elif command in ['MEMORY USAGE', 'PUBLISH', 'PUBSUB CHANNELS']:
+            # format example:
+            # PUBLISH channel message
             keys = [args[1]]
         elif command == 'MIGRATE':
-            # format exapmle:
+            # format example:
             # MIGRATE 192.168.1.34 6379 "" 0 5000 KEYS key1 key2 key3
             if args[3] == "":
                 keys_idx = args.index('KEYS')
@@ -125,6 +146,9 @@ class CommandsParser:
                 keys = None
             else:
                 keys = list(args[3:5])
+        elif command in ['SUBSCRIBE', 'PSUBSCRIBE', 'UNSUBSCRIBE',
+                         'PUNSUBSCRIBE', 'PUBSUB NUMSUB']:
+            keys = list(args[1:])
         else:
             keys = None
         return keys

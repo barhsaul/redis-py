@@ -301,6 +301,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
                 "CLUSTER SLOTS",
                 "RANDOMKEY",
                 "COMMAND",
+                "DEBUG",
             ],
             RANDOM,
         ),
@@ -458,7 +459,8 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
             Redis.RESPONSE_CALLBACKS,
             self.__class__.CLUSTER_COMMANDS_RESPONSE_CALLBACKS))
         self.result_callbacks = self.__class__.RESULT_CALLBACKS
-        self.commands_parser = CommandsParser(self)
+        self.commands_parser = CommandsParser(self.get_random_node().
+                                              redis_connection)
 
     def __enter__(self):
         return self
