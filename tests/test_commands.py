@@ -487,6 +487,19 @@ class TestRedisCommands:
     def test_client_unpause(self, r):
         assert r.client_unpause() == b'OK'
 
+    @skip_if_server_version_lt('3.2.0')
+    def test_client_reply(self, r, r_timeout):
+        assert r_timeout.client_reply('ON') == b'OK'
+        with pytest.raises(exceptions.TimeoutError):
+            r_timeout.client_reply('OFF')
+
+            r_timeout.client_reply('SKIP')
+
+        assert r_timeout.set('foo', 'bar')
+
+        # validate it was set
+        assert r.get('foo') == b'bar'
+
     def test_config_get(self, r):
         data = r.config_get()
         assert 'maxmemory' in data
@@ -3470,6 +3483,58 @@ class TestRedisCommands:
         res = r.command_count()
         assert isinstance(res, int)
         assert res >= 100
+
+    @skip_if_server_version_lt('4.0.0')
+    def test_module(self, r):
+        with pytest.raises(redis.exceptions.ModuleError) as excinfo:
+            r.module_load('/some/fake/path')
+            assert "Error loading the extension." in str(excinfo.value)
+
+        with pytest.raises(redis.exceptions.ModuleError) as excinfo:
+            r.module_load('/some/fake/path', 'arg1', 'arg2', 'arg3', 'arg4')
+            assert "Error loading the extension." in str(excinfo.value)
+
+    @skip_if_server_version_lt('2.6.0')
+    def test_restore(self, r):
+
+        # standard restore
+        key = 'foo'
+        r.set(key, 'bar')
+        dumpdata = r.dump(key)
+        r.delete(key)
+        assert r.restore(key, 0, dumpdata)
+        assert r.get(key) == b'bar'
+
+        # overwrite restore
+        with pytest.raises(redis.exceptions.ResponseError):
+            assert r.restore(key, 0, dumpdata)
+        r.set(key, 'a new value!')
+        assert r.restore(key, 0, dumpdata, replace=True)
+        assert r.get(key) == b'bar'
+
+        # ttl check
+        key2 = 'another'
+        r.set(key2, 'blee!')
+        dumpdata = r.dump(key2)
+        r.delete(key2)
+        assert r.restore(key2, 0, dumpdata)
+        assert r.ttl(key2) == -1
+
+        # idletime
+        key = 'yayakey'
+        r.set(key, 'blee!')
+        dumpdata = r.dump(key)
+        r.delete(key)
+        assert r.restore(key, 0, dumpdata, idletime=5)
+        assert r.get(key) == b'blee!'
+
+        # frequency
+        key = 'yayakey'
+        r.set(key, 'blee!')
+        dumpdata = r.dump(key)
+        r.delete(key)
+        assert r.restore(key, 0, dumpdata, frequency=5)
+        assert r.get(key) == b'blee!'
 
 
 @skip_if_cluster_mode()
