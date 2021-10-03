@@ -3,6 +3,7 @@ from unittest.mock import call, patch, MagicMock, DEFAULT
 from redis import Redis
 from redis.cluster import get_node_name, ClusterNode, RedisCluster, \
     NodesManager, PRIMARY, REDIS_CLUSTER_HASH_SLOTS, REPLICA
+from redis.commands import CommandsParser
 from redis.connection import Connection
 from redis.utils import str_if_bytes
 from redis.exceptions import (
@@ -41,10 +42,6 @@ def get_mocked_redis_client(func=None, *args, **kwargs):
             if _args[0] == 'CLUSTER SLOTS':
                 mock_cluster_slots = cluster_slots
                 return mock_cluster_slots
-            elif _args[0] == 'COMMAND':
-                return {'get': {'name': 'get', 'arity': 2, 'flags':
-                                ['readonly', 'fast'], 'first_key_pos': 1,
-                                'last_key_pos': 1, 'step_count': 1}}
             elif _args[1] == 'cluster-require-full-coverage':
                 return {'cluster-require-full-coverage': 'yes'}
             elif func is not None:
@@ -54,7 +51,20 @@ def get_mocked_redis_client(func=None, *args, **kwargs):
 
         execute_command_mock.side_effect = execute_command
 
-        return RedisCluster(*args, **kwargs)
+        with patch.object(CommandsParser, 'initialize',
+                          autospec=True) as cmd_parser_initialize:
+
+            def cmd_init_mock(self, r):
+                self.commands = {'get': {'name': 'get', 'arity': 2,
+                                         'flags': ['readonly',
+                                                   'fast'],
+                                         'first_key_pos': 1,
+                                         'last_key_pos': 1,
+                                         'step_count': 1}}
+
+            cmd_parser_initialize.side_effect = cmd_init_mock
+
+            return RedisCluster(*args, **kwargs)
 
 
 def find_node_ip_based_on_port(cluster_client, port):
@@ -136,7 +146,7 @@ class TestRedisClusterObj:
                          ClusterNode(default_host, port_2)]
         cluster = get_mocked_redis_client(startup_nodes=startup_nodes)
         assert cluster.get_node(host=default_host, port=port_1) is not None \
-            and cluster.get_node(host=default_host, port=port_2) is not None
+               and cluster.get_node(host=default_host, port=port_2) is not None
 
     def test_empty_startup_nodes(self):
         """
@@ -237,7 +247,6 @@ class TestRedisClusterObj:
                                     send_command=DEFAULT,
                                     connect=DEFAULT,
                                     can_read=DEFAULT) as mocks:
-
                     # simulate 7006 as a failed node
                     def parse_response_mock(connection, command_name,
                                             **options):
@@ -278,21 +287,33 @@ class TestRedisClusterObj:
                     mocks['can_read'].return_value = False
                     mocks['send_command'].return_value = "MOCK_OK"
                     mocks['connect'].return_value = None
+                    with patch.object(CommandsParser, 'initialize',
+                                      autospec=True) as cmd_parser_initialize:
 
-                    rc = _get_client(
-                        RedisCluster, request, flushdb=False)
-                    assert len(rc.get_nodes()) == 1
-                    assert rc.get_node(node_7006.name) is not None
+                        def cmd_init_mock(self, r):
+                            self.commands = {'get': {'name': 'get', 'arity': 2,
+                                                     'flags': ['readonly',
+                                                               'fast'],
+                                                     'first_key_pos': 1,
+                                                     'last_key_pos': 1,
+                                                     'step_count': 1}}
 
-                    rc.get('foo')
+                        cmd_parser_initialize.side_effect = cmd_init_mock
 
-                    # Cluster should now point to 7007, and there should be
-                    # one failed and one successful call
-                    assert len(rc.get_nodes()) == 1
-                    assert rc.get_node(node_7007.name) is not None
-                    assert rc.get_node(node_7006.name) is None
-                    assert parse_response.failed_calls == 1
-                    assert parse_response.successful_calls == 1
+                        rc = _get_client(
+                            RedisCluster, request, flushdb=False)
+                        assert len(rc.get_nodes()) == 1
+                        assert rc.get_node(node_7006.name) is not None
+
+                        rc.get('foo')
+
+                        # Cluster should now point to 7007, and there should be
+                        # one failed and one successful call
+                        assert len(rc.get_nodes()) == 1
+                        assert rc.get_node(node_7007.name) is not None
+                        assert rc.get_node(node_7006.name) is None
+                        assert parse_response.failed_calls == 1
+                        assert parse_response.successful_calls == 1
 
     def test_reading_from_replicas_in_round_robin(self):
         with patch.multiple(Connection, send_command=DEFAULT,
@@ -359,7 +380,7 @@ class TestRedisClusterObj:
 
     def test_get_node_name(self):
         assert get_node_name(default_host, default_port) == \
-            "{0}:{1}".format(default_host, default_port)
+               "{0}:{1}".format(default_host, default_port)
 
     def test_all_nodes(self, r):
         """
@@ -402,7 +423,7 @@ class TestRedisClusterObj:
             with pytest.raises(ClusterDownError):
                 rc.get("bar")
                 assert execute_command.failed_calls == \
-                    rc.cluster_error_retry_attempts
+                       rc.cluster_error_retry_attempts
 
     @pytest.mark.filterwarnings("ignore:ConnectionError")
     def test_connection_error_overreaches_retry_attempts(self):
@@ -423,7 +444,7 @@ class TestRedisClusterObj:
             with pytest.raises(ConnectionError):
                 rc.get("bar")
                 assert execute_command.failed_calls == \
-                    rc.cluster_error_retry_attempts
+                       rc.cluster_error_retry_attempts
 
 
 @skip_if_not_cluster_mode()
@@ -473,7 +494,7 @@ class TestClusterRedisCommands:
             p.subscribe(channel)
             # Assert that each node returns that only one client is subscribed
             assert node.redis_connection.pubsub_numsub(channel) == \
-                [(b_channel, 1)]
+                   [(b_channel, 1)]
         # Assert that the cluster's pubsub_numsub function returns ALL clients
         # subscribed to this channel in the entire cluster
         assert r.pubsub_numsub(channel) == [(b_channel, len(nodes))]
@@ -722,8 +743,7 @@ class TestNodesManager:
                                 ['127.0.0.1', 7002, 'node_2'],
                             ]
                         ]
-                    elif args[0] == 'COMMAND':
-                        return {}
+
                     elif args[1] == 'cluster-require-full-coverage':
                         return {'cluster-require-full-coverage': 'yes'}
 
@@ -742,8 +762,20 @@ class TestNodesManager:
                 RedisCluster(startup_nodes=[node_1])
             assert 'Redis Cluster cannot be connected' in str(e.value)
 
-            # When at least one startup node is reachable, the cluster
-            # initialization should succeeds
-            rc = RedisCluster(startup_nodes=[node_1, node_2])
-            assert rc.get_node(host=default_host, port=7001) is not None
-            assert rc.get_node(host=default_host, port=7002) is not None
+            with patch.object(CommandsParser, 'initialize',
+                              autospec=True) as cmd_parser_initialize:
+
+                def cmd_init_mock(self, r):
+                    self.commands = {'get': {'name': 'get', 'arity': 2,
+                                             'flags': ['readonly',
+                                                       'fast'],
+                                             'first_key_pos': 1,
+                                             'last_key_pos': 1,
+                                             'step_count': 1}}
+
+                cmd_parser_initialize.side_effect = cmd_init_mock
+                # When at least one startup node is reachable, the cluster
+                # initialization should succeeds
+                rc = RedisCluster(startup_nodes=[node_1, node_2])
+                assert rc.get_node(host=default_host, port=7001) is not None
+                assert rc.get_node(host=default_host, port=7002) is not None

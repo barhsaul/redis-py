@@ -3636,11 +3636,11 @@ class TestCommandsParser:
         args1 = ['GET', 'foo']
         args2 = ['OBJECT', 'encoding', 'foo']
         args3 = ['MGET', 'foo', 'bar', 'foobar']
-        assert commands_parser.get_keys(*args1) == ['foo']
-        assert commands_parser.get_keys(*args2) == ['foo']
-        assert commands_parser.get_keys(*args3) == ['foo', 'bar', 'foobar']
+        assert commands_parser.get_keys(r, *args1) == ['foo']
+        assert commands_parser.get_keys(r, *args2) == ['foo']
+        assert commands_parser.get_keys(r, *args3) == ['foo', 'bar', 'foobar']
 
-    def test_get_keys_no_predetermined_key_location(self, r):
+    def test_get_moveable_keys(self, r):
         commands_parser = CommandsParser(r)
         args1 = ['EVAL', 'return {KEYS[1],KEYS[2],ARGV[1],ARGV[2]}', 2, 'key1',
                  'key2', 'first', 'second']
@@ -3655,12 +3655,27 @@ class TestCommandsParser:
         args8 = ['STRALGO', 'LCS', 'STRINGS', 'string_a', 'string_b']
         args9 = ['STRALGO', 'LCS', 'KEYS', 'key1', 'key2']
 
-        assert commands_parser.get_keys(*args1) == ['key1', 'key2']
-        assert commands_parser.get_keys(*args2) == ['mystream', 'writers']
-        assert commands_parser.get_keys(*args3) == ['out', 'zset1', 'zset2']
-        assert commands_parser.get_keys(*args4) == ['Sicily', 'out']
-        assert commands_parser.get_keys(*args5) == ['foo']
-        assert commands_parser.get_keys(*args6) == ['key1', 'key2', 'key3']
-        assert commands_parser.get_keys(*args7) == ['key1']
-        assert commands_parser.get_keys(*args8) is None
-        assert commands_parser.get_keys(*args9) == ['key1', 'key2']
+        assert commands_parser.get_keys(
+            r, *args1).sort() == ['key1', 'key2'].sort()
+        assert commands_parser.get_keys(
+            r, *args2).sort() == ['mystream', 'writers'].sort()
+        assert commands_parser.get_keys(
+            r, *args3).sort() == ['out', 'zset1', 'zset2'].sort()
+        assert commands_parser.get_keys(
+            r, *args4).sort() == ['Sicily', 'out'].sort()
+        assert commands_parser.get_keys(r, *args5).sort() == ['foo'].sort()
+        assert commands_parser.get_keys(
+            r, *args6).sort() == ['key1', 'key2', 'key3'].sort()
+        assert commands_parser.get_keys(r, *args7).sort() == ['key1'].sort()
+        assert commands_parser.get_keys(r, *args8) is None
+        assert commands_parser.get_keys(
+            r, *args9).sort() == ['key1', 'key2'].sort()
+
+    def test_get_pubsub_keys(self, r):
+        commands_parser = CommandsParser(r)
+        args1 = ['PUBLISH', 'foo', 'bar']
+        args2 = ['PUBSUB NUMSUB', 'foo1', 'foo2', 'foo3']
+        args3 = ['SUBSCRIBE', 'foo1', 'foo2', 'foo3']
+        assert commands_parser.get_keys(r, *args1) == ['foo']
+        assert commands_parser.get_keys(r, *args2) == ['foo1', 'foo2', 'foo3']
+        assert commands_parser.get_keys(r, *args3) == ['foo1', 'foo2', 'foo3']
