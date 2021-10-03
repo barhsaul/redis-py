@@ -301,6 +301,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
                 "CLUSTER SLOTS",
                 "RANDOMKEY",
                 "COMMAND",
+                "COMMAND GETKEYS",
                 "DEBUG",
             ],
             RANDOM,
@@ -459,8 +460,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
             Redis.RESPONSE_CALLBACKS,
             self.__class__.CLUSTER_COMMANDS_RESPONSE_CALLBACKS))
         self.result_callbacks = self.__class__.RESULT_CALLBACKS
-        self.commands_parser = CommandsParser(self.get_random_node().
-                                              redis_connection)
+        self.commands_parser = CommandsParser(self)
 
     def __enter__(self):
         return self
@@ -611,11 +611,13 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
         """
         figure out what slot based on command and args
         """
-        keys = self.commands_parser.get_keys(*args)
+        redis_conn = self.get_random_node().redis_connection
+        keys = self.commands_parser.get_keys(redis_conn, *args)
         if keys is None or len(keys) == 0:
             raise RedisClusterException(
                 "No way to dispatch this command to Redis Cluster. "
-                "Missing key. command: {0}".format(args)
+                "Missing key.\nYou can execute the command by specifying "
+                "target nodes.\nCommand: {0}".format(args)
             )
 
         if len(keys) > 1:

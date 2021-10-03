@@ -8,6 +8,7 @@ from redis.exceptions import (
     DataError,
     NoScriptError,
     RedisError,
+    ResponseError
 )
 from redis.utils import str_if_bytes
 
@@ -21,14 +22,12 @@ class CommandsParser:
         self.initialize(redis_connection)
 
     def initialize(self, r):
-        if r is not None:
-            self.commands = r.execute_command("COMMAND")
-            self.initialized = True
+        self.commands = r.execute_command("COMMAND")
 
     # As soon as this PR is merged into Redis, we should reimplement
     # our logic to use COMMAND INFO changes to determine the key positions
     # https://github.com/redis/redis/pull/8324
-    def get_keys(self, *args):
+    def get_keys(self, redis_conn, *args):
         """
         Get the keys from the passed command
         """
@@ -36,116 +35,72 @@ class CommandsParser:
             # The command has no keys in it
             return None
 
-        if not self.initialized:
-            # return the argument in the default position for keys
-            return [args[__class__.DEFAULT_KEY_POS]]
-
         cmd_name = args[0].lower()
         if len(cmd_name.split()) > 1:
             # we need to take only the main command, e.g. 'memory' for
             # 'memory usage'
             cmd_name = cmd_name.split()[0]
         if cmd_name not in self.commands:
-            warnings.warn("{0} command doesn't exist in Redis commands".
-                          format(cmd_name.upper()))
-            return None
+            # We'll try to reinitialize the commands cache, if the engine
+            # version has changed, the commands may not be current
+            self.initialize(redis_conn)
+            if cmd_name not in self.commands:
+                raise RedisError("{0} command doesn't exist in Redis commands".
+                                 format(cmd_name.upper()))
 
         command = self.commands.get(cmd_name)
-        if 'movablekeys' not in command['flags'] and 'pubsub' not in \
-                command['flags']:
+        if 'movablekeys' in command['flags']:
+            keys = self.get_moveable_keys(redis_conn, *args)
+        elif 'pubsub' in command['flags']:
+            keys = self.get_pubsub_keys(*args)
+        else:
             if command['step_count'] == 0 and command['first_key_pos'] == 0 \
                     and command['last_key_pos'] == 0:
-                # We don't have further info, return the argument in the
-                # default position for keys
-                return [args[__class__.DEFAULT_KEY_POS]]
+                # The command doesn't have keys in it
+                return None
             last_key_pos = command['last_key_pos']
             if last_key_pos == -1:
                 last_key_pos = len(args) - 1
             keys_pos = list(range(command['first_key_pos'], last_key_pos + 1,
                                   command['step_count']))
             keys = [args[pos] for pos in keys_pos]
-        else:
-            keys = self.get_keys_complex(*args)
 
         return keys
 
-    def get_keys_complex(self, *args):
+    def get_moveable_keys(self, redis_conn, *args):
+        try:
+            pieces = []
+            cmd_name = args[0]
+            for arg in cmd_name.split():
+                # The command name should be splitted into separate arguments,
+                # e.g. 'MEMORY USAGE' will be splitted into ['MEMORY', 'USAGE']
+                pieces.append(arg)
+            pieces += args[1:]
+            keys = redis_conn.execute_command('COMMAND GETKEYS', *pieces)
+        except ResponseError as e:
+            message = e.__str__()
+            if 'Invalid arguments' in message or \
+                    'The command has no key arguments' in message:
+                return None
+            else:
+                raise e
+        return keys
+
+    def get_pubsub_keys(self, *args):
         """
-        Get the keys from command that has no predetermined key locations
-            eval
-            evalsha
-            georadius
-            georadius_ro
-            georadiusbymember
-            georadiusbymember_ro
-            memory
-            migrate
-            sort
-            stralgo
-            xread
-            xreadgroup
-            zinterstore
-            zunionstore
+        Get the keys from pubsub command.
+        Although PubSub commands have predetermined key locations, they are not
+        supported in the 'COMMAND's output. We will hardcode the key positions
         """
         if len(args) < 2:
             # The command has no keys in it
             return None
         args = [str_if_bytes(arg) for arg in args]
-        command = args[0]
-        if command in ['EVAL', 'EVALSHA']:
-            # format example:
-            # EVAL "return {KEYS[1],KEYS[2],ARGV[1]}" 2 key1 key2 first
-            numkeys = args[2]
-            keys = list(args[3: 3 + numkeys])
-        elif command in ['XREADGROUP', 'XREAD']:
-            # format example:
-            # XREAD COUNT 2 STREAMS mystream writers 0-0 0-0
-            stream_idx = args.index('STREAMS')
-            keys_ids = list(args[stream_idx + 1:])
-            idx_split = len(keys_ids) // 2
-            keys = keys_ids[: idx_split]
-        elif command in ['ZUNION', 'ZINTER']:
-            # format example:
-            # ZUNION 2 zset1 zset2
-            numkeys = args[1]
-            keys = list(args[2: 2 + numkeys])
-        elif command in ['ZUNIONSTORE', 'ZINTERSTORE']:
-            # format example:
-            # ZUNIONSTORE out 2 zset1 zset2 WEIGHTS 2 3
-            keys = [args[1]]
-            # destination key
-            numkeys = args[2]
-            keys.extend(args[3: 3 + numkeys])
-        elif command in ['GEORADIUS', 'GEORADIUS_RO', 'GEORADIUSBYMEMBER',
-                         'georadiusbymember_ro', 'SORT']:
-            # example command:
-            # GEORADIUS Sicily 15 37 200 km WITHCOORD STORE out
-            keys = [args[1]]
-            if 'STORE' in args:
-                store_idx = args.index('STORE')
-                keys.append(args[store_idx + 1])
-            if 'STOREDIST' in args:
-                storedist_idx = args.index('STOREDIST')
-                keys.append(args[storedist_idx + 1])
-        elif command in ['MEMORY USAGE', 'PUBLISH', 'PUBSUB CHANNELS']:
+        command = args[0].upper()
+        if command in ['PUBLISH', 'PUBSUB CHANNELS']:
             # format example:
             # PUBLISH channel message
             keys = [args[1]]
-        elif command == 'MIGRATE':
-            # format example:
-            # MIGRATE 192.168.1.34 6379 "" 0 5000 KEYS key1 key2 key3
-            if args[3] == "":
-                keys_idx = args.index('KEYS')
-                keys = list(args[keys_idx + 1:])
-            else:
-                keys = [args[3]]
-        elif command == 'STRALGO':
-            # format example:
-            # STRALGO LCS STRINGS <string_a> <string_b> | KEYS <key_a> <key_b>
-            if args[2] != 'KEYS':
-                keys = None
-            else:
-                keys = list(args[3:5])
         elif command in ['SUBSCRIBE', 'PSUBSCRIBE', 'UNSUBSCRIBE',
                          'PUNSUBSCRIBE', 'PUBSUB NUMSUB']:
             keys = list(args[1:])

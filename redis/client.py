@@ -717,6 +717,7 @@ class Redis(RedisModuleCommands, CoreCommands, object):
         'CLUSTER SLAVES': parse_cluster_nodes,
         'COMMAND': parse_command,
         'COMMAND COUNT': int,
+        'COMMAND GETKEYS': lambda r: list(map(str_if_bytes, r)),
         'CONFIG GET': parse_config_get,
         'CONFIG RESETSTAT': bool_ok,
         'CONFIG SET': bool_ok,
