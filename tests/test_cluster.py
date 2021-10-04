@@ -303,15 +303,17 @@ class TestRedisClusterObj:
                         rc = _get_client(
                             RedisCluster, request, flushdb=False)
                         assert len(rc.get_nodes()) == 1
-                        assert rc.get_node(node_7006.name) is not None
+                        assert rc.get_node(node_name=node_7006.name) is not \
+                               None
 
                         rc.get('foo')
 
                         # Cluster should now point to 7007, and there should be
                         # one failed and one successful call
                         assert len(rc.get_nodes()) == 1
-                        assert rc.get_node(node_7007.name) is not None
-                        assert rc.get_node(node_7006.name) is None
+                        assert rc.get_node(node_name=node_7007.name) is not \
+                               None
+                        assert rc.get_node(node_name=node_7006.name) is None
                         assert parse_response.failed_calls == 1
                         assert parse_response.successful_calls == 1
 

@@ -36,10 +36,11 @@ class CommandsParser:
             return None
 
         cmd_name = args[0].lower()
-        if len(cmd_name.split()) > 1:
+        cmd_name_split = cmd_name.split()
+        if len(cmd_name_split) > 1:
             # we need to take only the main command, e.g. 'memory' for
             # 'memory usage'
-            cmd_name = cmd_name.split()[0]
+            cmd_name = cmd_name_split[0]
         if cmd_name not in self.commands:
             # We'll try to reinitialize the commands cache, if the engine
             # version has changed, the commands may not be current
@@ -90,7 +91,8 @@ class CommandsParser:
         """
         Get the keys from pubsub command.
         Although PubSub commands have predetermined key locations, they are not
-        supported in the 'COMMAND's output. We will hardcode the key positions
+        supported in the 'COMMAND's output, so the key positions are hardcoded
+        in this method
         """
         if len(args) < 2:
             # The command has no keys in it
@@ -3321,9 +3323,6 @@ class ClusterCommands:
         Sends to random node in the cluster
         """
         return self.execute_command('CLUSTER SLOTS')
-
-    def cluster_bgsave_all(self):
-        pass
 
     def readonly(self):
         """
