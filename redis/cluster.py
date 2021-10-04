@@ -2,6 +2,7 @@ import copy
 import random
 import socket
 import time
+import threading
 import warnings
 
 from collections import OrderedDict
@@ -377,7 +378,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
             Can be used to point to a startup node
         :skip_full_coverage_check: 'bool'
             Skips the check of cluster-require-full-coverage config, useful for
-            clusters without the CONFIG command (like aws)
+            clusters without the CONFIG command (like ElastiCache)
        :read_from_replicas: 'bool'
             Enable read from replicas in READONLY mode. You can read possibly
             stale data.
@@ -461,6 +462,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
             self.__class__.CLUSTER_COMMANDS_RESPONSE_CALLBACKS))
         self.result_callbacks = self.__class__.RESULT_CALLBACKS
         self.commands_parser = CommandsParser(self)
+        self._lock = threading.Lock()
 
     def __enter__(self):
         return self
@@ -539,11 +541,13 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
 
     def get_redis_connection(self, node):
         if not node.redis_connection:
-            self.nodes_manager.create_redis_connections([node])
+            with self._lock:
+                if not node.redis_connection:
+                    self.nodes_manager.create_redis_connections([node])
         return node.redis_connection
 
-    def get_node(self, node_name=None, host=None, port=None):
-        return self.nodes_manager.get_node(node_name, host, port)
+    def get_node(self, host=None, port=None, node_name=None):
+        return self.nodes_manager.get_node(host, port, node_name)
 
     def get_primaries(self):
         return self.nodes_manager.get_nodes_by_server_type(PRIMARY)
@@ -602,7 +606,6 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
     def keyslot(self, key):
         """
         Calculate keyslot for a given key.
-        Tuned for compatibility with python 2.7.x
         """
         k = self.encoder.encode(key)
         return key_slot(k, REDIS_CLUSTER_HASH_SLOTS)
@@ -679,7 +682,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
                     res[node.name] = self._execute_command(
                         node, *args, **kwargs)
                 # Return the processed result
-                return self.process_result(args[0], res, **kwargs)
+                return self._process_result(args[0], res, **kwargs)
             except (ClusterDownError, ConnectionError) as e:
                 # Try again with the new cluster setup. All other errors
                 # should be raised.
@@ -707,7 +710,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
 
             try:
                 if asking:
-                    target_node = self.get_node(redirect_addr)
+                    target_node = self.get_node(node_name=redirect_addr)
                 elif moved:
                     # MOVED occurred and the slots cache was updated,
                     # refresh the target node
@@ -803,12 +806,14 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
 
     def close(self):
         try:
-            self.nodes_manager.close()
+            with self._lock:
+                if self.nodes_manager:
+                    self.nodes_manager.close()
         except AttributeError:
             # RedisCluster's __init__ can fail before nodes_manager is set
             pass
 
-    def process_result(self, command, res, **kwargs):
+    def _process_result(self, command, res, **kwargs):
         """
         `res` is a dict with the following structure:
             Dict(NodeName, CommandResult)
@@ -838,12 +843,13 @@ class ClusterNode(object):
         self.redis_connection = redis_connection
 
     def __repr__(self):
-        return 'host={0},port={1},' \
-               'name={2},server_type={3}' \
+        return '[host={0},port={1},' \
+               'name={2},server_type={3},redis_connection={4}]' \
             .format(self.host,
                     self.port,
                     self.name,
-                    self.server_type)
+                    self.server_type,
+                    self.redis_connection)
 
     def __eq__(self, obj):
         return isinstance(obj, ClusterNode) and obj.name == self.name
@@ -866,7 +872,7 @@ class LoadBalancer:
 
 class NodesManager:
     def __init__(self, startup_nodes, from_url=False,
-                 skip_full_coverage_check=False, **kwargs):
+                 skip_full_coverage_check=False, lock=None, **kwargs):
         self.nodes_cache = {}
         self.slots_cache = {}
         self.startup_nodes = {}
@@ -876,9 +882,12 @@ class NodesManager:
         self._moved_exception = None
         self.connection_kwargs = kwargs
         self.read_load_balancer = None
+        if lock is None:
+            lock = threading.Lock()
+        self._lock = lock
         self.initialize()
 
-    def get_node(self, node_name=None, host=None, port=None):
+    def get_node(self, host=None, port=None, node_name=None):
         if node_name is None and (host is None or port is None):
             warnings.warn(
                 "get_node requires one of the followings: "
@@ -933,7 +942,9 @@ class NodesManager:
         Gets a node that servers this hash slot
         """
         if self._moved_exception:
-            self._update_moved_slots()
+            with self._lock:
+                if self._moved_exception:
+                    self._update_moved_slots()
         if read_from_replicas:
             # get the server index in a Round-Robin manner
             node_idx = self.get_read_load_balancer().get_server_index(
@@ -969,7 +980,10 @@ class NodesManager:
 
     def get_read_load_balancer(self):
         if self.read_load_balancer is None:
-            self.read_load_balancer = LoadBalancer(REDIS_CLUSTER_HASH_SLOTS)
+            with self._lock:
+                if self.read_load_balancer is None:
+                    self.read_load_balancer = LoadBalancer(
+                        REDIS_CLUSTER_HASH_SLOTS)
         return self.read_load_balancer
 
     def populate_startup_nodes(self, nodes):
