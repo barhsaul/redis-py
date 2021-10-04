@@ -945,8 +945,93 @@ that return Python iterators for convenience: `scan_iter`, `hscan_iter`,
 Cluster Mode
 ^^^^^^^^^^^^
 
-redis-py does not currently support `Cluster Mode
-<https://redis.io/topics/cluster-tutorial>`_.
+redis-py is now supports cluster mode and provides a client for
+`Redis Cluster <https://redis.io/topics/cluster-tutorial>`_.
+
+Connecting redis-py to the Redis Cluster instance(s) is easy.
+RedisCluster requires at least one node to discover the whole cluster nodes,
+and there is multiple ways of creating a RedisCluster instance:
+
+1. Use the 'host' and 'port' arguments:
+
+.. code-block:: pycon
+
+    >>> from redis.cluster import RedisCluster as Redis
+    >>> rc = Redis(host='localhost', port=6379)
+    >>> print(rc.get_nodes())
+    [[host=127.0.0.1,port=6379,name=127.0.0.1:6379,server_type=primary,redis_connection=Redis<ConnectionPool<Connection<host=127.0.0.1,port=6379,db=0>>>], [host=127.0.0.1,port=6378,name=127.0.0.1:6378,server_type=primary,redis_connection=Redis<ConnectionPool<Connection<host=127.0.0.1,port=6378,db=0>>>], [host=127.0.0.1,port=6377,name=127.0.0.1:6377,server_type=replica,redis_connection=Redis<ConnectionPool<Connection<host=127.0.0.1,port=6377,db=0>>>]]
+
+2. Use Redis URL:
+
+.. code-block:: pycon
+
+    >>> from redis.cluster import RedisCluster as Redis
+    >>> rc = Redis.from_url("redis://localhost:6379/0")
+
+3. Use ClusterNode(s):
+
+.. code-block:: pycon
+
+    >>> from redis.cluster import RedisCluster as Redis
+    >>> from redis.cluster import ClusterNode
+    >>> nodes = [ClusterNode('localhost', 6379), ClusterNode('localhost', 6378)]
+    >>> rc = Redis(startup_nodes=nodes)
+
+When a RedisCluster instance is being created it first attempts to establish a connection to one of the provided startup nodes. If none of the startup nodes are reachable, a 'RedisClusterException' will be thrown.
+After a connection to the one of the cluster's nodes is established, the RedisCluster instance will be initialized with 3 caches:
+a slots cache which maps each of the 16384 slots to the node/s handling them,
+a nodes cache that contains ClusterNode objects (name, host, port, redis connection) for all of the cluster's nodes,
+and a commands cache contains all the server supported commands that were retrieved using the Redis 'COMMAND' output.
+
+RedisCluster instance can be directly used to execute some of Redis commands (see supported commands). When a command is being executed through the cluster instance, the target node(s) will be internally determined.
+When using a key-based command, the target node will be the node that holds the key's slot.
+Cluster management commands or other cluster commands have predefined node group targets (all-primaries, all-nodes, random-node, all-replicas), which are outlined in the command’s function documentation or listed in the cluster commands list.
+For example, ‘KEYS’ command will be sent to all primaries and return all keys in the cluster, and ‘CLUSTER NODES’ command will be sent to a random node.
+
+.. code-block:: pycon
+
+    >>> # target-nodes: the node that holds 'foo1's key slot
+    >>> rc.set('foo1', 'bar1')
+    >>> # target-nodes: the node that holds 'foo2's key slot
+    >>> rc.set('foo2', 'bar2')
+    >>> # target-nodes: the node that holds 'foo1's key slot
+    >>> print(rc.get('foo1'))
+    b'bar'
+    >>> # target-nodes: all-primaries
+    >>> print(rc.keys())
+    [b'foo1', b'foo2']
+    >>> # target-nodes: all-nodes
+    >>> rc.flushall()
+
+In addition, you can use the RedisCluster instance to obtain the Redis instance of a specific node and execute commands on that node directly.
+
+.. code-block:: pycon
+
+    >>> cluster_node = rc.get_node(host='localhost', port=6379)
+    >>> print(cluster_node)
+    [host=127.0.0.1,port=6379,name=127.0.0.1:6379,server_type=primary,redis_connection=Redis<ConnectionPool<Connection<host=127.0.0.1,port=6379,db=0>>>]
+    >>> r = cluster_node.redis_connection
+    >>> r.client_list()
+    [{'id': '276', 'addr': '127.0.0.1:64108', 'fd': '16', 'name': '', 'age': '0', 'idle': '0', 'flags': 'N', 'db': '0', 'sub': '0', 'psub': '0', 'multi': '-1', 'qbuf': '26', 'qbuf-free': '32742', 'argv-mem': '10', 'obl': '0', 'oll': '0', 'omem': '0', 'tot-mem': '54298', 'events': 'r', 'cmd': 'client', 'user': 'default'}]
+    >>> # Get the keys only for that specific node
+    >>> r.keys()
+    [b'foo1']
+
+Multi-key commands:
+
+.. code-block:: pycon
+
+    #  Atomic operation when all keys are mapped to the same slot
+    >>> rc.mset({'{foo}1': 'bar1', '{foo}2': 'bar2'})
+    >>> rc.mget('{foo}1', '{foo}2')
+    [b'bar1', b'bar2']
+
+
+See `Redis Cluster tutorial
+<https://redis.io/topics/cluster-tutorial>`_ and
+`Redis Cluster specifications
+<https://redis.io/topics/cluster-spec>`_
+to learn more about Redis Cluster.
 
 Author
 ^^^^^^
