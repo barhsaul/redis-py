@@ -363,7 +363,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
             port=6379,
             startup_nodes=None,
             cluster_error_retry_attempts=3,
-            skip_full_coverage_check=False,
+            require_full_coverage=True,
             reinitialize_steps=10,
             read_from_replicas=False,
             url=None,
@@ -376,9 +376,12 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
             Can be used to point to a startup node
         :port: 'int'
             Can be used to point to a startup node
-        :skip_full_coverage_check: 'bool'
-            Skips the check of cluster-require-full-coverage config, useful for
-            clusters without the CONFIG command (like ElastiCache)
+        :require_full_coverage: 'bool'
+            If set to True, as it is by default, all slots must be covered.
+            If set to False and not all slots are covered, the instance
+            creation will succeed only if 'cluster-require-full-coverage'
+            configuration is set to 'no' in all of the cluster's nodes.
+            Otherwise, RedisClusterException will be thrown.
        :read_from_replicas: 'bool'
             Enable read from replicas in READONLY mode. You can read possibly
             stale data.
@@ -453,7 +456,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
         self.nodes_manager = NodesManager(
             startup_nodes=startup_nodes,
             from_url=from_url,
-            skip_full_coverage_check=skip_full_coverage_check,
+            require_full_coverage=require_full_coverage,
             **kwargs,
         )
 
@@ -872,13 +875,13 @@ class LoadBalancer:
 
 class NodesManager:
     def __init__(self, startup_nodes, from_url=False,
-                 skip_full_coverage_check=False, lock=None, **kwargs):
+                 require_full_coverage=True, lock=None, **kwargs):
         self.nodes_cache = {}
         self.slots_cache = {}
         self.startup_nodes = {}
         self.populate_startup_nodes(startup_nodes)
         self.from_url = from_url
-        self._skip_full_coverage_check = skip_full_coverage_check
+        self._require_full_coverage = require_full_coverage
         self._moved_exception = None
         self.connection_kwargs = kwargs
         self.read_load_balancer = None
@@ -966,8 +969,8 @@ class NodesManager:
         except KeyError:
             raise SlotNotCoveredError(
                 'Slot "{0}" not covered by the cluster. '
-                '"skip_full_coverage_check={1}"'.format(
-                    slot, self._skip_full_coverage_check)
+                '"require_full_coverage={1}"'.format(
+                    slot, self._require_full_coverage)
             )
         return target_node
 
@@ -1017,16 +1020,12 @@ class NodesManager:
         return any(node_require_full_coverage(node)
                    for node in cluster_nodes.values())
 
-    def check_slots_coverage(self, cluster_nodes, slots_cache):
-        if not self._skip_full_coverage_check and \
-                self.cluster_require_full_coverage(
-                    cluster_nodes
-                ):
-            # Validate if all slots are covered or if we should try next
-            # startup node
-            for i in range(0, REDIS_CLUSTER_HASH_SLOTS):
-                if i not in slots_cache:
-                    return False
+    def check_slots_coverage(self, slots_cache):
+        # Validate if all slots are covered or if we should try next
+        # startup node
+        for i in range(0, REDIS_CLUSTER_HASH_SLOTS):
+            if i not in slots_cache:
+                return False
         return True
 
     def create_redis_connections(self, nodes):
@@ -1170,16 +1169,37 @@ class NodesManager:
                 "Redis Cluster cannot be connected. Please provide at least "
                 "one reachable node. "
             )
-        # Create Redis connections to all nodes
 
+        # Create Redis connections to all nodes
         self.create_redis_connections(list(tmp_nodes_cache.values()))
 
-        if not self.check_slots_coverage(tmp_nodes_cache, tmp_slots):
-            raise RedisClusterException(
-                'All slots are not covered after query all startup_nodes.'
-                ' {0} of {1} covered...'.format(
-                    len(self.slots_cache), REDIS_CLUSTER_HASH_SLOTS)
-            )
+        fully_covered = self.check_slots_coverage(tmp_slots)
+        if not fully_covered:
+            if self._require_full_coverage:
+                # Despite the requirement that the slots be covered, there
+                # isn't a full coverage
+                raise RedisClusterException(
+                    'All slots are not covered after query all startup_nodes.'
+                    ' {0} of {1} covered...'.format(
+                        len(self.slots_cache), REDIS_CLUSTER_HASH_SLOTS)
+                )
+            else:
+                # The user set require_full_coverage to False.
+                # In case of full coverage requirement in the cluster's Redis
+                # configurations, we will raise an exception. Otherwise, we may
+                # continue with partial coverage.
+                # see Redis Cluster configuration parameters in
+                # https://redis.io/topics/cluster-tutorial
+                if self.cluster_require_full_coverage(tmp_nodes_cache):
+                    raise RedisClusterException(
+                        'Not all slots are covered but the cluster\'s '
+                        'configuration requires full coverage. Set '
+                        'cluster-require-full-coverage configuration to no on '
+                        'all of the cluster nodes if you wish the cluster to '
+                        'be able to serve without being fully covered.'
+                        ' {0} of {1} covered...'.format(
+                            len(self.slots_cache), REDIS_CLUSTER_HASH_SLOTS)
+                    )
 
         # Set the tmp variables to the real variables
         self.nodes_cache = tmp_nodes_cache

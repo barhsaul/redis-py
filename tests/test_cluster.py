@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import call, patch, MagicMock, DEFAULT
+from unittest.mock import call, patch, DEFAULT
 from redis import Redis
 from redis.cluster import get_node_name, ClusterNode, RedisCluster, \
     NodesManager, PRIMARY, REDIS_CLUSTER_HASH_SLOTS, REPLICA
@@ -37,13 +37,14 @@ def get_mocked_redis_client(func=None, *args, **kwargs):
     on different installations and machines.
     """
     cluster_slots = kwargs.pop('cluster_slots', default_cluster_slots)
+    coverage_res = kwargs.pop('coverage_result', 'yes')
     with patch.object(Redis, 'execute_command') as execute_command_mock:
         def execute_command(*_args, **_kwargs):
             if _args[0] == 'CLUSTER SLOTS':
                 mock_cluster_slots = cluster_slots
                 return mock_cluster_slots
             elif _args[1] == 'cluster-require-full-coverage':
-                return {'cluster-require-full-coverage': 'yes'}
+                return {'cluster-require-full-coverage': coverage_res}
             elif func is not None:
                 return func()
             else:
@@ -169,16 +170,6 @@ class TestRedisClusterObj:
             cluster = RedisCluster.from_url(redis_url)
         assert cluster.get_node(host=default_host,
                                 port=default_port) is not None
-
-    def test_skip_full_coverage_check(self):
-        """
-        Test if the cluster_require_full_coverage NodeManager method was not
-         called with the flag activated
-        """
-        cluster = get_mocked_redis_client(default_host, default_port,
-                                          skip_full_coverage_check=True)
-        cluster.nodes_manager.cluster_require_full_coverage = MagicMock()
-        assert not cluster.nodes_manager.cluster_require_full_coverage.called
 
     def test_execute_command_errors(self, r):
         """
@@ -562,10 +553,11 @@ class TestNodesManager:
         assert str(ex.value).startswith(
             "All slots are not covered after query all startup_nodes.")
 
-    def test_init_slots_cache_not_require_full_coverage(self):
+    def test_init_slots_cache_not_require_full_coverage_error(self):
         """
-        When skip_full_coverage_check is set to True and not all slots are
-        covered, the cluster initialization should be successful
+        When require_full_coverage is set to False and not all slots are
+        covered, if one of the nodes has 'cluster-require_full_coverage'
+        config set to 'yes' the cluster initialization should fail
         """
         # Missing slot 5460
         cluster_slots = [
@@ -575,9 +567,32 @@ class TestNodesManager:
             [10923, 16383, ['127.0.0.1', 7002],
              ['127.0.0.1', 7005]],
         ]
+
+        with pytest.raises(RedisClusterException):
+            get_mocked_redis_client(host=default_host, port=default_port,
+                                    cluster_slots=cluster_slots,
+                                    require_full_coverage=False,
+                                    coverage_result='yes')
+
+    def test_init_slots_cache_not_require_full_coverage_success(self):
+        """
+        When require_full_coverage is set to False and not all slots are
+        covered, if all of the nodes has 'cluster-require_full_coverage'
+        config set to 'no' the cluster initialization should succeed
+        """
+        # Missing slot 5460
+        cluster_slots = [
+            [0, 5459, ['127.0.0.1', 7000], ['127.0.0.1', 7003]],
+            [5461, 10922, ['127.0.0.1', 7001],
+             ['127.0.0.1', 7004]],
+            [10923, 16383, ['127.0.0.1', 7002],
+             ['127.0.0.1', 7005]],
+        ]
+
         rc = get_mocked_redis_client(host=default_host, port=default_port,
                                      cluster_slots=cluster_slots,
-                                     skip_full_coverage_check=True)
+                                     require_full_coverage=False,
+                                     coverage_result='no')
 
         assert 5460 not in rc.nodes_manager.slots_cache
 
