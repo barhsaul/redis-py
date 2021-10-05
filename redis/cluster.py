@@ -439,6 +439,9 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
         # Update the connection arguments
         # Whenever a new connection is established, RedisCluster's on_connect
         # method should be run
+        # If the user passed on_connect function we'll save it and run it
+        # inside the RedisCluster.on_connect() function
+        self.user_on_connect_func = kwargs.pop("redis_connect_func", None)
         kwargs.update({"redis_connect_func": self.on_connect})
         kwargs = cleanup_kwargs(**kwargs)
 
@@ -541,6 +544,9 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
             connection.send_command('READONLY')
             if str_if_bytes(connection.read_response()) != 'OK':
                 raise ConnectionError('READONLY command failed')
+
+        if self.user_on_connect_func is not None:
+            self.user_on_connect_func(connection)
 
     def get_redis_connection(self, node):
         if not node.redis_connection:
