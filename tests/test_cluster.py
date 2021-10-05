@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import call, patch, DEFAULT
+from unittest.mock import call, patch, DEFAULT, Mock
 from redis import Redis
 from redis.cluster import get_node_name, ClusterNode, RedisCluster, \
     NodesManager, PRIMARY, REDIS_CLUSTER_HASH_SLOTS, REPLICA
@@ -438,6 +438,18 @@ class TestRedisClusterObj:
                 rc.get("bar")
                 assert execute_command.failed_calls == \
                        rc.cluster_error_retry_attempts
+
+    def test_user_on_connect_function(self, request):
+        """
+        Test support in passing on_connect function by the user
+        """
+        def on_connect(connection):
+            assert connection is not None
+
+        mock = Mock(side_effect=on_connect)
+
+        _get_client(RedisCluster, request, redis_connect_func=mock)
+        assert mock.called is True
 
 
 @skip_if_not_cluster_mode()
