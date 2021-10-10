@@ -72,11 +72,11 @@ def parse_cluster_slots(resp, **options):
 
     slots = {}
     for slot in resp:
-        start, end, master = slot[:3]
-        slaves = slot[3:]
+        start, end, primary = slot[:3]
+        replicas = slot[3:]
         slots[start, end] = {
-            'master': fix_server(*master),
-            'slaves': [fix_server(*slave) for slave in slaves],
+            'primary': fix_server(*primary),
+            'replicas': [fix_server(*replica) for replica in replicas],
         }
 
     return slots
@@ -463,9 +463,8 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
             **kwargs,
         )
 
-        self.response_callbacks = CaseInsensitiveDict(dict_merge(
-            Redis.RESPONSE_CALLBACKS,
-            self.__class__.CLUSTER_COMMANDS_RESPONSE_CALLBACKS))
+        self.cluster_response_callbacks = CaseInsensitiveDict(
+            self.__class__.CLUSTER_COMMANDS_RESPONSE_CALLBACKS)
         self.result_callbacks = self.__class__.RESULT_CALLBACKS
         self.commands_parser = CommandsParser(self)
         self._lock = threading.Lock()
@@ -737,7 +736,12 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
                     asking = False
 
                 connection.send_command(*args)
-                return redis_node.parse_response(connection, command, **kwargs)
+                response = redis_node.parse_response(connection, command,
+                                                     **kwargs)
+                if command in self.cluster_response_callbacks:
+                    response = self.cluster_response_callbacks[command](
+                        response, **kwargs)
+                return response
 
             except (RedisClusterException, BusyLoadingError):
                 warnings.warn("RedisClusterException || BusyLoadingError")

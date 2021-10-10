@@ -7,9 +7,9 @@ services:
     ports:
       - "6379:6379"
 
-  slave:
-    container_name: redis-slave
-    build: docker/slave
+  replica:
+    container_name: redis-replica
+    build: docker/replica
     depends_on:
       - "master"
     ports:
@@ -19,7 +19,7 @@ services:
     container_name: sentinel-1
     build: docker/sentinel_1
     depends_on:
-      - "slave"
+      - "replica"
     ports:
       - "26379:26379"
 
@@ -27,7 +27,7 @@ services:
     container_name: sentinel-2
     build: docker/sentinel_2
     depends_on:
-      - "slave"
+      - "replica"
     ports:
       - "26380:26380"
 
@@ -35,7 +35,7 @@ services:
     container_name: sentinel-3
     build: docker/sentinel_3
     depends_on:
-      - "slave"
+      - "replica"
     ports:
       - "26381:26381"
 
@@ -51,9 +51,9 @@ services:
     ports:
       - "16380:16380"
 
-  cluster_slave_1:
-    container_name: cluster-slave-1
-    build: docker/cluster/slave_1
+  cluster_replica_1:
+    container_name: cluster-replica-1
+    build: docker/cluster/replica_1
     depends_on:
       - "cluster_master_1"
     ports:
@@ -61,9 +61,9 @@ services:
     environment:
       CLUSTER_MASTER_HOST: cluster_master_1
 
-  cluster_slave_2:
-    container_name: cluster-slave-2
-    build: docker/cluster/slave_2
+  cluster_replica_2:
+    container_name: cluster-replica-2
+    build: docker/cluster/replica_2
     depends_on:
       - "cluster_master_2"
     ports:
@@ -75,7 +75,7 @@ services:
     container_name: test
     build: .
     depends_on:
-      - "cluster_slave_2"
+      - "cluster_replica_2"
     environment:
       REDIS_MASTER_HOST: master
       REDIS_MASTER_PORT: 6379
