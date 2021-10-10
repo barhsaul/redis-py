@@ -6,6 +6,7 @@ startup_nodes = [ClusterNode(host, 6378), ClusterNode(host, 6379)]
 
 # from_url examples
 rc_url = Redis.from_url("redis://localhost:6379/0")
+print(rc_url.cluster_slots())
 print(rc_url.execute_command("STRALGO", "LCS", "STRINGS", "string1",
                              "string2",
                              target_nodes=rc_url.get_random_node()))

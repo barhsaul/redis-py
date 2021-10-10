@@ -47,10 +47,10 @@ def get_stream_message(client, stream, message_id):
 
 
 # RESPONSE CALLBACKS
+@skip_if_cluster_mode()
 class TestResponseCallbacks:
     "Tests for the response callback system"
 
-    @skip_if_cluster_mode()
     def test_response_callbacks(self, r):
         assert r.response_callbacks == redis.Redis.RESPONSE_CALLBACKS
         assert id(r.response_callbacks) != id(redis.Redis.RESPONSE_CALLBACKS)

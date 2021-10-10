@@ -1,8 +1,8 @@
 import pytest
 from unittest.mock import call, patch, DEFAULT, Mock
 from redis import Redis
-from redis.cluster import get_node_name, ClusterNode, RedisCluster, \
-    NodesManager, PRIMARY, REDIS_CLUSTER_HASH_SLOTS, REPLICA
+from redis.cluster import get_node_name, ClusterNode, \
+    RedisCluster, NodesManager, PRIMARY, REDIS_CLUSTER_HASH_SLOTS, REPLICA
 from redis.commands import CommandsParser
 from redis.connection import Connection
 from redis.utils import str_if_bytes
@@ -386,7 +386,7 @@ class TestRedisClusterObj:
 
     def test_all_nodes_masters(self, r):
         """
-        Set a list of nodes with random masters/slaves config and it shold
+        Set a list of nodes with random primaries/replicas config and it shold
         be possible to iterate over all of them.
         """
         nodes = [node for node in r.nodes_manager.nodes_cache.values()
@@ -454,6 +454,10 @@ class TestRedisClusterObj:
 
 @skip_if_not_cluster_mode()
 class TestClusterRedisCommands:
+    def test_case_insensitive_command_names(self, r):
+        assert r.cluster_response_callbacks['cluster nodes'] == \
+               r.cluster_response_callbacks['CLUSTER NODES']
+
     def test_get_and_set(self, r):
         # get and set can't be tested independently of each other
         assert r.get('a') is None
@@ -517,6 +521,12 @@ class TestClusterRedisCommands:
         # Assert that the cluster's pubsub_numsub function returns ALL clients
         # subscribed to this channel in the entire cluster
         assert r.pubsub_numpat() == len(nodes)
+
+    def test_cluster_slots(self, r):
+        node = r.get_random_node().redis_connection
+        orig_slots = node.execute_command("CLUSTER SLOTS")
+        cluster_slots = r.cluster_slots()
+        assert len(orig_slots) == len(cluster_slots)
 
 
 @skip_if_not_cluster_mode()
