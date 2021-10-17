@@ -475,7 +475,8 @@ class RedisCluster(ClusterCommands,
 
         self.cluster_response_callbacks = CaseInsensitiveDict(
             self.__class__.CLUSTER_COMMANDS_RESPONSE_CALLBACKS)
-        self.result_callbacks = self.__class__.RESULT_CALLBACKS
+        self.result_callbacks = CaseInsensitiveDict(
+            self.__class__.RESULT_CALLBACKS)
         self.commands_parser = CommandsParser(self)
         self._lock = threading.Lock()
 
@@ -632,14 +633,6 @@ class RedisCluster(ClusterCommands,
                     get_node_from_slot(slot, self.read_from_replicas
                                        and command in READ_COMMANDS)]
 
-    def _increment_reinitialize_counter(self, count=1):
-        # In order not to reinitialize the cluster, the user can set
-        # reinitialize_steps to 0.
-        for i in range(min(1, self.reinitialize_steps)):
-            self.reinitialize_counter += count
-            if self.reinitialize_counter % self.reinitialize_steps == 0:
-                self.initialize()
-
     def _should_reinitialized(self):
         # In order not to reinitialize the cluster, the user can set
         # reinitialize_steps to 0.
@@ -682,14 +675,18 @@ class RedisCluster(ClusterCommands,
 
     def execute_command(self, *args, **kwargs):
         """
-        Wrapper for CLUSTERDOWN error handling.
+        Wrapper for ClusterDownError and ConnectionError error handling.
 
         It will try the number of times specified by the config option
         "self.cluster_error_retry_attempts" which defaults to 3 unless manually
         configured.
 
-        If it reaches the number of times, the command will raises
-        ClusterDownException.
+        If it reaches the number of times, the command will raise the exception
+
+        Key argument :target_nodes: can be passed with the following types:
+            ClusterNode
+            list<ClusterNode>
+            dict<Any, ClusterNode>
         """
         target_nodes = kwargs.pop("target_nodes", None)
         target_nodes_specified = target_nodes is not None
@@ -729,6 +726,7 @@ class RedisCluster(ClusterCommands,
                 # Return the processed result
                 return self._process_result(args[0], res, **kwargs)
             except (ClusterDownError, ConnectionError) as e:
+                # The nodes and slots cache were reinitialized.
                 # Try again with the new cluster setup. All other errors
                 # should be raised.
                 exception = e
@@ -752,7 +750,6 @@ class RedisCluster(ClusterCommands,
 
         while ttl > 0:
             ttl -= 1
-
             try:
                 if asking:
                     target_node = self.get_node(node_name=redirect_addr)
@@ -800,6 +797,7 @@ class RedisCluster(ClusterCommands,
                     time.sleep(0.25)
                 else:
                     # Hard force of reinitialize of the node/slots setup
+                    # and try again with the new setup
                     self.nodes_manager.initialize()
                     raise
             except TimeoutError:
@@ -865,12 +863,15 @@ class RedisCluster(ClusterCommands,
 
     def _process_result(self, command, res, **kwargs):
         """
-        `res` is a dict with the following structure:
-            Dict(NodeName, CommandResult)
-        """
-        if not isinstance(res, dict):
-            raise ValueError('The result should be of dict type')
+        Process the result of the executed command.
+        The function would return a dict or a single value.
 
+        :type command: str
+        :type res: dict
+
+        `res` should be in the following format:
+            Dict<node_name, command_result>
+        """
         if command in self.result_callbacks:
             return self.result_callbacks[command](command, res, **kwargs)
         elif len(res) == 1:
