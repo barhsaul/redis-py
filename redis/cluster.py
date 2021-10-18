@@ -11,10 +11,11 @@ from redis.commands import (
     ClusterCommands,
     DataAccessCommands,
     ClusterManagementCommands,
-    CommandsParser
+    CommandsParser,
+    ClusterMultiKeyCommands
 )
 from redis.connection import DefaultParser, ConnectionPool, Encoder, parse_url
-from redis.crc import key_slot
+from redis.crc import key_slot, REDIS_CLUSTER_HASH_SLOTS
 from redis.exceptions import (
     AskError,
     BusyLoadingError,
@@ -233,10 +234,6 @@ READ_COMMANDS = frozenset([
     "ZSCORE",
 ])
 
-# Redis Cluster's key space is divided into 16384 slots.
-# For more information see: https://github.com/redis/redis/issues/2576
-REDIS_CLUSTER_HASH_SLOTS = 16384
-
 
 def cleanup_kwargs(**kwargs):
     """
@@ -263,13 +260,17 @@ class ClusterParser(DefaultParser):
         })
 
 
-class RedisCluster(ClusterCommands, DataAccessCommands,
+class RedisCluster(ClusterCommands,
+                   ClusterMultiKeyCommands,
+                   DataAccessCommands,
                    ClusterManagementCommands, object):
     RedisClusterRequestTTL = 16
     NODES_FLAGS = dict_merge(
         list_keys_to_dict(
             [
                 "CLIENT LIST",
+                "CLIENT SETNAME",
+                "CLIENT GETNAME",
                 "CONFIG SET",
                 "TIME",
                 "PUBSUB CHANNELS",
@@ -284,7 +285,8 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
                 "KEYS",
                 "SCAN",
                 "FLUSHALL",
-                "FLUSHDB"
+                "FLUSHDB",
+                "DBSIZE"
             ],
             ALL_PRIMARIES,
         ),
@@ -354,7 +356,12 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
         ], merge_result),
         list_keys_to_dict([
             "PING",
+            "CONFIG SET",
+            "CLIENT SETNAME",
         ], lambda command, res: all(res.values())),
+        list_keys_to_dict([
+            "DBSIZE"
+        ], lambda command, res: sum(res.values()))
     )
 
     def __init__(
@@ -616,7 +623,7 @@ class RedisCluster(ClusterCommands, DataAccessCommands,
         Calculate keyslot for a given key.
         """
         k = self.encoder.encode(key)
-        return key_slot(k, REDIS_CLUSTER_HASH_SLOTS)
+        return key_slot(k)
 
     def determine_slot(self, *args):
         """
