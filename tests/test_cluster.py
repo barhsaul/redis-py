@@ -12,6 +12,7 @@ from redis.exceptions import (
     ClusterDownError,
     MovedError,
     RedisClusterException,
+    RedisError
 )
 from .conftest import skip_if_not_cluster_mode, _get_client
 
@@ -47,7 +48,7 @@ def get_mocked_redis_client(func=None, *args, **kwargs):
             elif _args[1] == 'cluster-require-full-coverage':
                 return {'cluster-require-full-coverage': coverage_res}
             elif func is not None:
-                return func()
+                return func(*args, **kwargs)
             else:
                 return execute_command_mock(*_args, **_kwargs)
 
@@ -67,6 +68,19 @@ def get_mocked_redis_client(func=None, *args, **kwargs):
             cmd_parser_initialize.side_effect = cmd_init_mock
 
             return RedisCluster(*args, **kwargs)
+
+
+def mock_node_resp(node, response):
+    connection = Mock()
+    connection.read_response.return_value = response
+    node.redis_connection.connection = connection
+    return node
+
+
+def mock_all_nodes_resp(rc, response):
+    for node in rc.get_nodes():
+        mock_node_resp(node, response)
+    return rc
 
 
 def find_node_ip_based_on_port(cluster_client, port):
@@ -444,6 +458,7 @@ class TestRedisClusterObj:
         """
         Test support in passing on_connect function by the user
         """
+
         def on_connect(connection):
             assert connection is not None
 
@@ -456,8 +471,8 @@ class TestRedisClusterObj:
 @skip_if_not_cluster_mode()
 class TestClusterRedisCommands:
     def test_case_insensitive_command_names(self, r):
-        assert r.cluster_response_callbacks['cluster nodes'] == \
-               r.cluster_response_callbacks['CLUSTER NODES']
+        assert r.cluster_response_callbacks['cluster addslots'] == \
+               r.cluster_response_callbacks['CLUSTER ADDSLOTS']
 
     def test_get_and_set(self, r):
         # get and set can't be tested independently of each other
@@ -579,10 +594,197 @@ class TestClusterRedisCommands:
         assert r.pubsub_numpat() == len(nodes)
 
     def test_cluster_slots(self, r):
-        node = r.get_random_node().redis_connection
-        orig_slots = node.execute_command("CLUSTER SLOTS")
+        mock_all_nodes_resp(r, default_cluster_slots)
         cluster_slots = r.cluster_slots()
-        assert len(orig_slots) == len(cluster_slots)
+        assert isinstance(cluster_slots, dict)
+        assert len(default_cluster_slots) == len(cluster_slots)
+        assert cluster_slots.get((0, 8191)) is not None
+        assert cluster_slots.get((0, 8191)).get('primary') == \
+               ('127.0.0.1', 7000)
+
+    def test_cluster_addslots(self, r):
+        node = r.get_random_node()
+        mock_node_resp(node, 'OK')
+        assert r.cluster_addslots(node, 1, 2, 3) is True
+
+    def test_cluster_countkeysinslot(self, r):
+        node = r.nodes_manager.get_node_from_slot(1)
+        mock_node_resp(node, 2)
+        assert r.cluster_countkeysinslot(1) == 2
+
+    def test_cluster_count_failure_report(self, r):
+        mock_all_nodes_resp(r, 0)
+        assert r.cluster_count_failure_report('node_0') == 0
+
+    def test_cluster_delslots(self):
+        cluster_slots = [
+            [
+                0, 8191,
+                ['127.0.0.1', 7000, 'node_0'],
+            ],
+            [
+                8192, 16383,
+                ['127.0.0.1', 7001, 'node_1'],
+            ]
+        ]
+        r = get_mocked_redis_client(host=default_host, port=default_port,
+                                    cluster_slots=cluster_slots)
+        mock_all_nodes_resp(r, 'OK')
+        node0 = r.get_node(default_host, 7000)
+        node1 = r.get_node(default_host, 7001)
+        assert r.cluster_delslots(0, 8192) == [True, True]
+        assert node0.redis_connection.connection.read_response.called
+        assert node1.redis_connection.connection.read_response.called
+
+    def test_cluster_failover(self, r):
+        node = r.get_random_node()
+        mock_node_resp(node, 'OK')
+        assert r.cluster_failover(node) is True
+        assert r.cluster_failover(node, 'FORCE') is True
+        assert r.cluster_failover(node, 'TAKEOVER') is True
+        with pytest.raises(RedisError):
+            r.cluster_failover(node, 'FORCT')
+
+    def test_cluster_info(self, r):
+        info = r.cluster_info()
+        assert isinstance(info, dict)
+        assert info['cluster_state'] == 'ok'
+
+    def test_cluster_keyslot(self, r):
+        mock_all_nodes_resp(r, 12182)
+        assert r.cluster_keyslot('foo') == 12182
+
+    def test_cluster_meet(self, r):
+        node = r.get_random_node()
+        mock_node_resp(node, 'OK')
+        assert r.cluster_meet(node, '127.0.0.1', 6379) is True
+
+    def test_cluster_nodes(self, r):
+        response = (
+            'c8253bae761cb1ecb2b61857d85dfe455a0fec8b 172.17.0.7:7006 '
+            'slave aa90da731f673a99617dfe930306549a09f83a6b 0 '
+            '1447836263059 5 connected\n'
+            '9bd595fe4821a0e8d6b99d70faa660638a7612b3 172.17.0.7:7008 '
+            'master - 0 1447836264065 0 connected\n'
+            'aa90da731f673a99617dfe930306549a09f83a6b 172.17.0.7:7003 '
+            'myself,master - 0 0 2 connected 5461-10922\n'
+            '1df047e5a594f945d82fc140be97a1452bcbf93e 172.17.0.7:7007 '
+            'slave 19efe5a631f3296fdf21a5441680f893e8cc96ec 0 '
+            '1447836262556 3 connected\n'
+            '4ad9a12e63e8f0207025eeba2354bcf4c85e5b22 172.17.0.7:7005 '
+            'master - 0 1447836262555 7 connected 0-5460\n'
+            '19efe5a631f3296fdf21a5441680f893e8cc96ec 172.17.0.7:7004 '
+            'master - 0 1447836263562 3 connected 10923-16383\n'
+            'fbb23ed8cfa23f17eaf27ff7d0c410492a1093d6 172.17.0.7:7002 '
+            'master,fail - 1447829446956 1447829444948 1 disconnected\n'
+        )
+        mock_all_nodes_resp(r, response)
+        nodes = r.cluster_nodes()
+        assert len(nodes) == 7
+        assert nodes.get('172.17.0.7:7006') is not None
+        assert nodes.get('172.17.0.7:7006').get('node_id') == \
+               "c8253bae761cb1ecb2b61857d85dfe455a0fec8b"
+
+    def test_cluster_replicate(self, r):
+        node = r.get_random_node()
+        all_replicas = r.get_replicas()
+        mock_all_nodes_resp(r, 'OK')
+        assert r.cluster_replicate(node, 'c8253bae761cb61857d') is True
+        results = r.cluster_replicate(all_replicas, 'c8253bae761cb61857d')
+        for res in results.values():
+            assert res is True
+
+    def test_cluster_reset(self, r):
+        node = r.get_random_node()
+        all_nodes = r.get_nodes()
+        mock_all_nodes_resp(r, 'OK')
+        assert r.cluster_reset(node) is True
+        assert r.cluster_reset(node, False) is True
+        all_results = r.cluster_reset(all_nodes, False)
+        for res in all_results.values():
+            assert res is True
+
+    def test_cluster_save_config(self, r):
+        node = r.get_random_node()
+        all_nodes = r.get_nodes()
+        mock_all_nodes_resp(r, 'OK')
+        assert r.cluster_save_config(node) is True
+        all_results = r.cluster_save_config(all_nodes)
+        for res in all_results.values():
+            assert res is True
+
+    def test_cluster_get_keys_in_slot(self, r):
+        response = [b'{foo}1', b'{foo}2']
+        node = r.nodes_manager.get_node_from_slot(12182)
+        mock_node_resp(node, response)
+        keys = r.cluster_get_keys_in_slot(12182, 4)
+        assert keys == response
+
+    def test_cluster_set_config_epoch(self, r):
+        node = r.get_random_node()
+        all_nodes = r.get_nodes()
+        mock_all_nodes_resp(r, 'OK')
+        assert r.cluster_set_config_epoch(node, 3) is True
+        all_results = r.cluster_set_config_epoch(all_nodes, 3)
+        for res in all_results.values():
+            assert res is True
+
+    def test_cluster_setslot(self, r):
+        node = r.get_random_node()
+        mock_node_resp(node, 'OK')
+        assert r.cluster_setslot(node, 'node_0', 1218, 'IMPORTING') is True
+        assert r.cluster_setslot(node, 'node_0', 1218, 'NODE') is True
+        assert r.cluster_setslot(node, 'node_0', 1218, 'MIGRATING') is True
+        with pytest.raises(RedisError):
+            r.cluster_failover(node, 'STABLE')
+        with pytest.raises(RedisError):
+            r.cluster_failover(node, 'STATE')
+
+    def test_cluster_setslot_stable(self, r):
+        node = r.nodes_manager.get_node_from_slot(12182)
+        mock_node_resp(node, 'OK')
+        assert r.cluster_setslot_stable(12182) is True
+        assert node.redis_connection.connection.read_response.called
+
+    def test_cluster_replicas(self, r):
+        response = [b'01eca22229cf3c652b6fca0d09ff6941e0d2e3 '
+                    b'127.0.0.1:6377@16377 slave '
+                    b'52611e796814b78e90ad94be9d769a4f668f9a 0 '
+                    b'1634550063436 4 connected',
+                    b'r4xfga22229cf3c652b6fca0d09ff69f3e0d4d '
+                    b'127.0.0.1:6378@16378 slave '
+                    b'52611e796814b78e90ad94be9d769a4f668f9a 0 '
+                    b'1634550063436 4 connected']
+        mock_all_nodes_resp(r, response)
+        replicas = r.cluster_replicas('52611e796814b78e90ad94be9d769a4f668f9a')
+        assert replicas.get('127.0.0.1:6377') is not None
+        assert replicas.get('127.0.0.1:6378') is not None
+        assert replicas.get('127.0.0.1:6378').get('node_id') == \
+               'r4xfga22229cf3c652b6fca0d09ff69f3e0d4d'
+
+    def test_readonly(self):
+        r = get_mocked_redis_client(host=default_host, port=default_port)
+        node = r.get_random_node()
+        all_replicas = r.get_replicas()
+        mock_all_nodes_resp(r, 'OK')
+        assert r.readonly(node) is True
+        all_replicas_results = r.readonly()
+        for res in all_replicas_results.values():
+            assert res is True
+        for replica in all_replicas:
+            assert replica.redis_connection.connection.read_response.called
+
+    def test_readwrite(self):
+        r = get_mocked_redis_client(host=default_host, port=default_port)
+        node = r.get_random_node()
+        all_replicas = r.get_replicas()
+        mock_all_nodes_resp(r, 'OK')
+        assert r.readwrite(node) is True
+        all_replicas_results = r.readwrite()
+        for res in all_replicas_results.values():
+            assert res is True
+        for replica in all_replicas:
+            assert replica.redis_connection.connection.read_response.called
 
 
 @skip_if_not_cluster_mode()

@@ -453,6 +453,7 @@ def _parse_node_line(line):
     line_items = line.split(' ')
     node_id, addr, flags, master_id, ping, pong, epoch, \
         connected = line.split(' ')[:8]
+    addr = addr.split('@')[0]
     slots = [sl.split('-') for sl in line_items[8:]]
     node_dict = {
         'node_id': node_id,
@@ -468,8 +469,13 @@ def _parse_node_line(line):
 
 
 def parse_cluster_nodes(response, **options):
-    raw_lines = str_if_bytes(response).splitlines()
-    return dict(_parse_node_line(line) for line in raw_lines)
+    """
+    @see: http://redis.io/commands/cluster-nodes  # string
+    @see: http://redis.io/commands/cluster-replicas # list of string
+    """
+    if isinstance(response, str):
+        response = response.splitlines()
+    return dict(_parse_node_line(str_if_bytes(node)) for node in response)
 
 
 def parse_geosearch_generic(response, **options):
@@ -707,6 +713,7 @@ class Redis(Commands, object):
         'CLUSTER SET-CONFIG-EPOCH': bool_ok,
         'CLUSTER SETSLOT': bool_ok,
         'CLUSTER SLAVES': parse_cluster_nodes,
+        'CLUSTER REPLICAS': parse_cluster_nodes,
         'COMMAND': parse_command,
         'COMMAND COUNT': int,
         'COMMAND GETKEYS': lambda r: list(map(str_if_bytes, r)),

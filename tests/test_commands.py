@@ -3648,6 +3648,7 @@ class TestCommandsParser:
         assert commands_parser.get_keys(r, *args2) == ['foo']
         assert commands_parser.get_keys(r, *args3) == ['foo', 'bar', 'foobar']
 
+    @pytest.mark.filterwarnings("ignore:ResponseError")
     def test_get_moveable_keys(self, r):
         commands_parser = CommandsParser(r)
         args1 = ['EVAL', 'return {KEYS[1],KEYS[2],ARGV[1],ARGV[2]}', 2, 'key1',

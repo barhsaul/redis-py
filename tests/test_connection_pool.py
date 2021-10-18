@@ -525,6 +525,7 @@ class TestConnection:
         assert len(pool._available_connections) == 1
         assert not pool._available_connections[0]._sock
 
+    @pytest.mark.filterwarnings("ignore:ResponseError")
     @skip_if_server_version_lt('2.8.8')
     def test_read_only_error(self, r):
         "READONLY errors get turned in ReadOnlyError exceptions"
