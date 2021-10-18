@@ -7,13 +7,10 @@ import warnings
 import sys
 
 from collections import OrderedDict
-from redis.client import CaseInsensitiveDict, Redis, parse_info, PubSub
+from redis.client import CaseInsensitiveDict, Redis, PubSub
 from redis.commands import (
     ClusterCommands,
-    DataAccessCommands,
-    ClusterManagementCommands,
-    CommandsParser,
-    ClusterMultiKeyCommands
+    CommandsParser
 )
 from redis.connection import DefaultParser, ConnectionPool, Encoder, parse_url
 from redis.crc import key_slot, REDIS_CLUSTER_HASH_SLOTS
@@ -27,11 +24,11 @@ from redis.exceptions import (
     MasterDownError,
     MovedError,
     RedisClusterException,
+    RedisError,
     ResponseError,
     SlotNotCoveredError,
     TimeoutError,
     TryAgainError,
-    RedisError
 )
 from redis.utils import (
     dict_merge,
@@ -84,73 +81,6 @@ def parse_cluster_slots(resp, **options):
         }
 
     return slots
-
-
-def parse_cluster_nodes(resp, **options):
-    """
-    @see: http://redis.io/commands/cluster-nodes  # string
-    @see: http://redis.io/commands/cluster-slaves # list of string
-    """
-    resp = str_if_bytes(resp)
-    current_host = options.get('current_host', '')
-
-    def parse_slots(s):
-        slots, migrations = [], []
-        for r in s.split(' '):
-            if '->-' in r:
-                slot_id, dst_node_id = r[1:-1].split('->-', 1)
-                migrations.append({
-                    'slot': int(slot_id),
-                    'node_id': dst_node_id,
-                    'state': 'migrating'
-                })
-            elif '-<-' in r:
-                slot_id, src_node_id = r[1:-1].split('-<-', 1)
-                migrations.append({
-                    'slot': int(slot_id),
-                    'node_id': src_node_id,
-                    'state': 'importing'
-                })
-            elif '-' in r:
-                start, end = r.split('-')
-                slots.extend(range(int(start), int(end) + 1))
-            else:
-                slots.append(int(r))
-
-        return slots, migrations
-
-    resp = resp.splitlines()
-    nodes = []
-    for line in resp:
-        parts = line.split(' ', 8)
-        self_id, addr, flags, master_id, ping_sent, \
-            pong_recv, config_epoch, link_state = parts[:8]
-
-        host, ports = addr.rsplit(':', 1)
-        port, _, cluster_port = ports.partition('@')
-
-        node = {
-            'id': self_id,
-            'host': host or current_host,
-            'port': int(port),
-            'cluster-bus-port': int(
-                cluster_port) if cluster_port else 10000 + int(port),
-            'flags': tuple(flags.split(',')),
-            'master': master_id if master_id != '-' else None,
-            'ping-sent': int(ping_sent),
-            'pong-recv': int(pong_recv),
-            'link-state': link_state,
-            'slots': [],
-            'migrations': [],
-        }
-
-        if len(parts) >= 9:
-            slots, migrations = parse_slots(parts[8])
-            node['slots'], node['migrations'] = tuple(slots), migrations
-
-        nodes.append(node)
-
-    return nodes
 
 
 PRIMARY = "primary"
@@ -263,12 +193,9 @@ class ClusterParser(DefaultParser):
         })
 
 
-class RedisCluster(ClusterCommands,
-                   ClusterMultiKeyCommands,
-                   DataAccessCommands,
-                   ClusterManagementCommands, object):
+class RedisCluster(ClusterCommands, object):
     RedisClusterRequestTTL = 16
-    NODES_FLAGS = dict_merge(
+    COMMAND_FLAGS = dict_merge(
         list_keys_to_dict(
             [
                 "CLIENT LIST",
@@ -302,9 +229,12 @@ class RedisCluster(ClusterCommands,
         ),
         list_keys_to_dict(
             [
+                "CLUSTER INFO",
                 "CLUSTER NODES",
                 "CLUSTER REPLICAS",
                 "CLUSTER SLOTS",
+                "CLUSTER COUNT-FAILURE-REPORTS",
+                "CLUSTER KEYSLOT",
                 "RANDOMKEY",
                 "COMMAND",
                 "COMMAND GETKEYS",
@@ -315,6 +245,7 @@ class RedisCluster(ClusterCommands,
         list_keys_to_dict(
             [
                 "CLUSTER COUNTKEYSINSLOT",
+                "CLUSTER DELSLOTS",
                 "CLUSTER GETKEYSINSLOT",
                 "CLUSTER SETSLOT",
             ],
@@ -330,16 +261,13 @@ class RedisCluster(ClusterCommands,
         'CLUSTER FAILOVER': bool,
         'CLUSTER FORGET': bool,
         'CLUSTER GETKEYSINSLOT': list,
-        'CLUSTER INFO': parse_info,
         'CLUSTER KEYSLOT': int,
         'CLUSTER MEET': bool,
-        'CLUSTER NODES': parse_cluster_nodes,
         'CLUSTER REPLICATE': bool,
         'CLUSTER RESET': bool,
         'CLUSTER SAVECONFIG': bool,
         'CLUSTER SET-CONFIG-EPOCH': bool,
         'CLUSTER SETSLOT': bool,
-        'CLUSTER SLAVES': parse_cluster_nodes,
         'CLUSTER SLOTS': parse_cluster_slots,
         'ASKING': bool,
         'READONLY': bool,
@@ -361,10 +289,12 @@ class RedisCluster(ClusterCommands,
             "PING",
             "CONFIG SET",
             "CLIENT SETNAME",
-        ], lambda command, res: all(res.values())),
+        ], lambda command, res: all(res.values()) if isinstance(res, dict)
+            else res),
         list_keys_to_dict([
             "DBSIZE"
-        ], lambda command, res: sum(res.values()))
+        ], lambda command, res: sum(res.values()) if isinstance(res, dict)
+            else res)
     )
 
     def __init__(
@@ -461,7 +391,7 @@ class RedisCluster(ClusterCommands,
             kwargs.get("decode_responses", False),
         )
         self.cluster_error_retry_attempts = cluster_error_retry_attempts
-        self.nodes_flags = self.__class__.NODES_FLAGS.copy()
+        self.command_flags = self.__class__.COMMAND_FLAGS.copy()
         self.read_from_replicas = read_from_replicas
         self.reinitialize_counter = 0
         self.reinitialize_steps = reinitialize_steps
@@ -616,15 +546,15 @@ class RedisCluster(ClusterCommands,
 
     def _determine_nodes(self, *args, **kwargs):
         command = args[0]
-        node_flag = self.nodes_flags.get(command)
+        command_flag = self.command_flags.get(command)
 
-        if node_flag == RANDOM:
+        if command_flag == RANDOM:
             return [self.get_random_node()]
-        elif node_flag == ALL_PRIMARIES:
+        elif command_flag == ALL_PRIMARIES:
             return self.get_primaries()
-        elif node_flag == ALL_REPLICAS:
+        elif command_flag == ALL_REPLICAS:
             return self.get_replicas()
-        elif node_flag == ALL_NODES:
+        elif command_flag == ALL_NODES:
             return self.get_nodes()
         else:
             # get the node that holds the key's slot
@@ -652,6 +582,10 @@ class RedisCluster(ClusterCommands,
         """
         figure out what slot based on command and args
         """
+        if self.command_flags.get(args[0]) == SLOT_ID:
+            # The command contains the slot ID
+            return args[1]
+
         redis_conn = self.get_random_node().redis_connection
         keys = self.commands_parser.get_keys(redis_conn, *args)
         if keys is None or len(keys) == 0:
@@ -840,6 +774,10 @@ class RedisCluster(ClusterCommands,
                 # and retry executing the command
                 time.sleep(0.05)
                 self.nodes_manager.initialize()
+                raise e
+            except ResponseError as e:
+                message = e.__str__()
+                warnings.warn("ResponseError: {0}".format(message))
                 raise e
             except BaseException as e:
                 warnings.warn("BaseException")
@@ -1361,7 +1299,7 @@ class ClusterPipeline(RedisCluster):
                                  self.__class__.RESULT_CALLBACKS.copy())
         self.startup_nodes = startup_nodes if startup_nodes else []
         self.read_from_replicas = read_from_replicas
-        self.nodes_flags = self.__class__.NODES_FLAGS.copy()
+        self.command_flags = self.__class__.COMMAND_FLAGS.copy()
         self.cluster_response_callbacks = cluster_response_callbacks
         self.cluster_error_retry_attempts = cluster_error_retry_attempts
 
@@ -1516,7 +1454,7 @@ class ClusterPipeline(RedisCluster):
         # If it fails the configured number of times then raise
         # exception back to caller of this method
         raise ClusterDownError(
-                "CLUSTERDOWN error. Unable to rebuild the cluster")
+            "CLUSTERDOWN error. Unable to rebuild the cluster")
 
     def _send_cluster_commands(self, stack,
                                raise_on_error=True,
@@ -1604,7 +1542,7 @@ class ClusterPipeline(RedisCluster):
         # collect all the commands we are allowed to retry.
         # (MOVED, ASK, or connection errors or timeout errors)
         attempt = sorted([c for c in attempt
-                         if isinstance(c.result, ERRORS_ALLOW_RETRY)],
+                          if isinstance(c.result, ERRORS_ALLOW_RETRY)],
                          key=lambda x: x.position)
         if attempt and allow_redirections:
             # RETRY MAGIC HAPPENS HERE!
@@ -1708,6 +1646,7 @@ def block_pipeline_command(func):
     Prints error because some pipelined commands should
     be blocked when running in cluster-mode
     """
+
     def inner(*args, **kwargs):
         raise RedisClusterException(
             "ERROR: Calling pipelined function {0} is blocked when "
@@ -1726,7 +1665,6 @@ ClusterPipeline.client_setname = \
     block_pipeline_command(RedisCluster.client_setname)
 ClusterPipeline.config_set = block_pipeline_command(RedisCluster.config_set)
 ClusterPipeline.dbsize = block_pipeline_command(RedisCluster.dbsize)
-ClusterPipeline.evalsha = block_pipeline_command(RedisCluster.evalsha)
 ClusterPipeline.flushall = block_pipeline_command(RedisCluster.flushall)
 ClusterPipeline.flushdb = block_pipeline_command(RedisCluster.flushdb)
 ClusterPipeline.keys = block_pipeline_command(RedisCluster.keys)
@@ -1743,12 +1681,6 @@ ClusterPipeline.rename = block_pipeline_command(RedisCluster.rename)
 ClusterPipeline.renamenx = block_pipeline_command(RedisCluster.renamenx)
 ClusterPipeline.rpoplpush = block_pipeline_command(RedisCluster.rpoplpush)
 ClusterPipeline.scan = block_pipeline_command(RedisCluster.scan)
-ClusterPipeline.script_exists = \
-    block_pipeline_command(RedisCluster.script_exists)
-ClusterPipeline.script_flush = \
-    block_pipeline_command(RedisCluster.script_flush)
-ClusterPipeline.script_kill = block_pipeline_command(RedisCluster.script_kill)
-ClusterPipeline.script_load = block_pipeline_command(RedisCluster.script_load)
 ClusterPipeline.sdiff = block_pipeline_command(RedisCluster.sdiff)
 ClusterPipeline.sdiffstore = block_pipeline_command(RedisCluster.sdiffstore)
 ClusterPipeline.sinter = block_pipeline_command(RedisCluster.sinter)
