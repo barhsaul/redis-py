@@ -1,4 +1,5 @@
 import pytest
+from time import sleep
 from unittest.mock import call, patch, DEFAULT, Mock
 from redis import Redis
 from redis.cluster import get_node_name, ClusterNode, \
@@ -470,6 +471,61 @@ class TestClusterRedisCommands:
         assert r.get('byte_string') == byte_string
         assert r.get('integer') == str(integer).encode()
         assert r.get('unicode_string').decode('utf-8') == unicode_string
+
+    def test_mget_nonatomic(self, r):
+        assert r.mget_nonatomic([]) == []
+        assert r.mget_nonatomic(['a', 'b']) == [None, None]
+        r['a'] = '1'
+        r['b'] = '2'
+        r['c'] = '3'
+
+        assert (r.mget_nonatomic('a', 'other', 'b', 'c') ==
+                [b'1', None, b'2', b'3'])
+
+    def test_mset_nonatomic(self, r):
+        d = {'a': b'1', 'b': b'2', 'c': b'3', 'd': b'4'}
+        assert r.mset_nonatomic(d)
+        for k, v in d.items():
+            assert r[k] == v
+
+    def test_dbsize(self, r):
+        d = {'a': b'1', 'b': b'2', 'c': b'3', 'd': b'4'}
+        assert r.mset_nonatomic(d)
+        assert r.dbsize() == len(d)
+
+    def test_config_set(self, r):
+        assert r.config_set('slowlog-log-slower-than', 0)
+
+    def test_client_setname(self, r):
+        r.client_setname('redis_py_test')
+        res = r.client_getname()
+        for client_name in res.values():
+            assert client_name == 'redis_py_test'
+
+    def test_exists(self, r):
+        d = {'a': b'1', 'b': b'2', 'c': b'3', 'd': b'4'}
+        r.mset_nonatomic(d)
+        assert r.exists(*d.keys()) == len(d)
+
+    def test_delete(self, r):
+        d = {'a': b'1', 'b': b'2', 'c': b'3', 'd': b'4'}
+        r.mset_nonatomic(d)
+        assert r.delete(*d.keys()) == len(d)
+        assert r.delete(*d.keys()) == 0
+
+    def test_touch(self, r):
+        d = {'a': b'1', 'b': b'2', 'c': b'3', 'd': b'4'}
+        r.mset_nonatomic(d)
+        assert r.touch(*d.keys()) == len(d)
+
+    def test_unlink(self, r):
+        d = {'a': b'1', 'b': b'2', 'c': b'3', 'd': b'4'}
+        r.mset_nonatomic(d)
+        assert r.unlink(*d.keys()) == len(d)
+        # Unlink is non-blocking so we sleep before
+        # verifying the deletion
+        sleep(0.1)
+        assert r.unlink(*d.keys()) == 0
 
     def test_pubsub_channels_merge_results(self, r):
         nodes = r.get_nodes()
