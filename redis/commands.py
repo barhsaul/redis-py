@@ -11,6 +11,7 @@ from redis.exceptions import (
     ResponseError
 )
 from redis.utils import str_if_bytes
+from redis.crc import key_slot
 
 
 class CommandsParser:
@@ -3111,6 +3112,140 @@ class SentinalCommands:
 
 
 
+class ClusterMultiKeyCommands:
+    """
+    A class containing commands that handle more than one key
+    """
+
+    def _partition_keys_by_slot(self, keys):
+        """
+        Split keys into a dictionary that maps a slot to
+        a list of keys.
+        """
+        slots_to_keys = {}
+        for key in keys:
+            k = self.encoder.encode(key)
+            slot = key_slot(k)
+            slots_to_keys.setdefault(slot, []).append(key)
+
+        return slots_to_keys
+
+    def mget_nonatomic(self, keys, *args):
+        """
+        Splits the keys into different slots and then calls MGET
+        for the keys of every slot. This operation will not be atomic
+        if keys belong to more than one slot.
+
+        Returns a list of values ordered identically to ``keys``
+        """
+
+        from redis.client import EMPTY_RESPONSE
+        options = {}
+        if not args:
+            options[EMPTY_RESPONSE] = []
+
+        # Concatenate all keys into a list
+        keys = list_or_args(keys, args)
+        # Split keys into slots
+        slots_to_keys = self._partition_keys_by_slot(keys)
+
+        # Call MGET for every slot and concatenate
+        # the results
+        all_results = []
+        for slot_keys in slots_to_keys.values():
+            one_slot_results = self.execute_command(
+                               'MGET', *slot_keys, **options)
+            all_results.extend(one_slot_results)
+
+        return all_results
+
+    def mset_nonatomic(self, mapping):
+        """
+        Sets key/values based on a mapping. Mapping is a dictionary of
+        key/value pairs. Both keys and values should be strings or types that
+        can be cast to a string via str().
+
+        Splits the keys into different slots and then calls MSET
+        for the keys of every slot. This operation will not be atomic
+        if keys belong to more than one slot.
+        """
+
+        # Partition the keys by slot
+        slots_to_pairs = {}
+        for pair in mapping.items():
+            # encode the key
+            k = self.encoder.encode(pair[0])
+            slot = key_slot(k)
+            slots_to_pairs.setdefault(slot, []).extend(pair)
+
+        # Call MSET for every slot and concatenate
+        # the results (one result per slot)
+        res = []
+        for pairs in slots_to_pairs.values():
+            res.append(self.execute_command('MSET', *pairs))
+
+        return res
+
+    def _split_command_across_slots(self, command, *keys):
+        """
+        Runs the given command once for the keys
+        of each slot. Returns the sum of the return values.
+        """
+        # Partition the keys by slot
+        slots_to_keys = self._partition_keys_by_slot(keys)
+
+        # Sum up the reply from each command
+        total = 0
+        for slot_keys in slots_to_keys.values():
+            total += self.execute_command(command, *slot_keys)
+
+        return total
+
+    def exists(self, *keys):
+        """
+        Returns the number of ``names`` that exist in the
+        whole cluster. The keys are first split up into slots
+        and then an EXISTS command is sent for every slot
+        """
+        return self._split_command_across_slots('EXISTS', *keys)
+
+    def delete(self, *keys):
+        """
+        Deletes the given keys in the cluster.
+        The keys are first split up into slots
+        and then an DEL command is sent for every slot
+
+        Non-existant keys are ignored.
+        Returns the number of keys that were deleted.
+        """
+        return self._split_command_across_slots('DEL', *keys)
+
+    def touch(self, *keys):
+        """
+        Updates the last access time of given keys across the
+        cluster.
+
+        The keys are first split up into slots
+        and then an TOUCH command is sent for every slot
+
+        Non-existant keys are ignored.
+        Returns the number of keys that were touched.
+        """
+        return self._split_command_across_slots('TOUCH', *keys)
+
+    def unlink(self, *keys):
+        """
+        Remove the specified keys in a different thread.
+
+        The keys are first split up into slots
+        and then an TOUCH command is sent for every slot
+
+        Non-existant keys are ignored.
+        Returns the number of keys that were unlinked.
+        """
+        return self._split_command_across_slots('UNLINK', *keys)
+
+
 class DataAccessCommands(BasicKeyCommands, ListCommands,
                          ScanCommands, SetCommands, StreamsCommands,
                          SortedSetCommands,
@@ -3387,3 +3522,22 @@ class ClusterManagementCommands:
         Returns True if the ping was successful across all nodes.
         """
         return self.execute_command('PING')
+
+    def dbsize(self):
+        return self.execute_command('DBSIZE')
+
+    def config_set(self, name, value):
+        "Set config item ``name`` with ``value``"
+        return self.execute_command('CONFIG SET', name, value)
+
+    def client_setname(self, name):
+        "Sets the current connection name in all nodes"
+        return self.execute_command('CLIENT SETNAME', name)
+
+    def client_getname(self):
+        """
+        Returns the current connection name from all nodes.
+        The result will be a dictionary with the IP and
+        connection name.
+        """
+        return self.execute_command('CLIENT GETNAME')
