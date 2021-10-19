@@ -977,16 +977,27 @@ and there is multiple ways of creating a RedisCluster instance:
     >>> nodes = [ClusterNode('localhost', 6379), ClusterNode('localhost', 6378)]
     >>> rc = Redis(startup_nodes=nodes)
 
-When a RedisCluster instance is being created it first attempts to establish a connection to one of the provided startup nodes. If none of the startup nodes are reachable, a 'RedisClusterException' will be thrown.
-After a connection to the one of the cluster's nodes is established, the RedisCluster instance will be initialized with 3 caches:
+When a RedisCluster instance is being created it first attempts to establish a
+connection to one of the provided startup nodes. If none of the startup nodes
+are reachable, a 'RedisClusterException' will be thrown.
+After a connection to the one of the cluster's nodes is established, the
+RedisCluster instance will be initialized with 3 caches:
 a slots cache which maps each of the 16384 slots to the node/s handling them,
-a nodes cache that contains ClusterNode objects (name, host, port, redis connection) for all of the cluster's nodes,
-and a commands cache contains all the server supported commands that were retrieved using the Redis 'COMMAND' output.
+a nodes cache that contains ClusterNode objects (name, host, port, redis connection)
+for all of the cluster's nodes, and a commands cache contains all the server
+supported commands that were retrieved using the Redis 'COMMAND' output.
 
-RedisCluster instance can be directly used to execute some of Redis commands (see supported commands). When a command is being executed through the cluster instance, the target node(s) will be internally determined.
-When using a key-based command, the target node will be the node that holds the key's slot.
-Cluster management commands or other cluster commands have predefined node group targets (all-primaries, all-nodes, random-node, all-replicas), which are outlined in the command’s function documentation or listed in the cluster commands list.
-For example, ‘KEYS’ command will be sent to all primaries and return all keys in the cluster, and ‘CLUSTER NODES’ command will be sent to a random node.
+RedisCluster instance can be directly used to execute Redis commands. When a
+command is being executed through the cluster instance, the target node(s) will
+be internally determined. When using a key-based command, the target node will
+be the node that holds the key's slot.
+Cluster management commands or other cluster commands have predefined node group
+targets (all-primaries, all-nodes, random-node, all-replicas), which are
+outlined in the command’s function documentation.
+For example, ‘KEYS’ command will be sent to all primaries and return all keys
+in the cluster, and ‘CLUSTER NODES’ command will be sent to a random node.
+Other management commands will require you to pass the target node/s to execute
+the command on.
 
 .. code-block:: pycon
 
@@ -1002,8 +1013,17 @@ For example, ‘KEYS’ command will be sent to all primaries and return all key
     [b'foo1', b'foo2']
     >>> # target-nodes: all-nodes
     >>> rc.flushall()
+    >>> # run cluster-meet command on all of the cluster's nodes
+    >>> rc.cluster_meet(rc.get_nodes(), '127.0.0.1', 6379)
+    >>> # ping all primaries
+    >>> rc.ping(rc.get_primaries())
+    >>> # ping a specific node
+    >>> rc.ping(rc.get_random_node())
+    >>> # ping all nodes in the cluster, default behavior
+    >>> rc.ping()
 
-In addition, you can use the RedisCluster instance to obtain the Redis instance of a specific node and execute commands on that node directly.
+In addition, you can use the RedisCluster instance to obtain the Redis instance
+of a specific node and execute commands on that node directly.
 
 .. code-block:: pycon
 
@@ -1018,13 +1038,30 @@ In addition, you can use the RedisCluster instance to obtain the Redis instance 
     [b'foo1']
 
 Multi-key commands:
+Redis supports multi-key commands in Cluster Mode, such as Set type unions or
+intersections, mset and mget, as long as the keys all hash to the same slot.
+By using RedisCluster client, you can use the known functions (e.g. mget, mset)
+to perform an atomic multi-key operation. However, you must ensure all keys are
+mapped to the same slot, otherwise a RedisClusterException will be thrown.
+Redis Cluster implements a concept called hash tags that can be used in order
+to force certain keys to be stored in the same hash slot, see `Keys hash tag
+<https://redis.io/topics/cluster-spec#keys-hash-tags>`_.
+You can also use nonatomic for some of the multikey operations, and pass keys
+that aren't mapped to the same slot. The client will then map the keys to the
+relevant slots, sending the commands to the slots' node owners. Non-atomic
+operations batch the keys according to their hash value, and then each batch is
+sent separately to the slot's owner.
 
 .. code-block:: pycon
 
-    #  Atomic operation when all keys are mapped to the same slot
+    #  Atomic operations can be used when all keys are mapped to the same slot
     >>> rc.mset({'{foo}1': 'bar1', '{foo}2': 'bar2'})
     >>> rc.mget('{foo}1', '{foo}2')
     [b'bar1', b'bar2']
+    # Non-atomic multi-key operations splits the keys into different slots
+    >>> rc.mset_nonatomic({'foo': 'value1', 'bar': 'value2', 'zzz': 'value3')
+    >>> rc.mget_nonatomic('foo', 'bar', 'zzz')
+    [b'value1', b'value2', b'value3']
 
 
 See `Redis Cluster tutorial
