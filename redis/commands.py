@@ -3270,32 +3270,98 @@ class Commands(AclCommands, DataAccessCommands, ManagementCommands,
 
 
 class ClusterManagementCommands:
-    def flushall(self, asynchronous=False):
+    def bgsave(self, schedule=True, target_nodes=None):
         """
-        Delete all keys in the database on all hosts.
-        In cluster mode this method is the same as flushdb
+        Tell the Redis server to save its data to disk.  Unlike save(),
+        this method is asynchronous and returns immediately.
+        """
+        pieces = []
+        if schedule:
+            pieces.append("SCHEDULE")
+        return self.execute_command('BGSAVE',
+                                    *pieces,
+                                    target_nodes=target_nodes)
 
-        ``asynchronous`` indicates whether the operation is
-        executed asynchronously by the server.
+    def client_getname(self, target_nodes=None):
+        """
+        Returns the current connection name from all nodes.
+        The result will be a dictionary with the IP and
+        connection name.
+        """
+        return self.execute_command('CLIENT GETNAME',
+                                    target_nodes=target_nodes)
+
+    def client_getredir(self, target_nodes=None):
+        """Returns the ID (an integer) of the client to whom we are
+        redirecting tracking notifications.
+
+        see: https://redis.io/commands/client-getredir
+        """
+        return self.execute_command('CLIENT GETREDIR',
+                                    target_nodes=target_nodes)
+
+    def client_id(self, target_nodes=None):
+        """Returns the current connection id"""
+        return self.execute_command('CLIENT ID',
+                                    target_nodes=target_nodes)
+
+    def client_info(self, target_nodes=None):
+        """
+        Returns information and statistics about the current
+        client connection.
+        """
+        return self.execute_command('CLIENT INFO',
+                                    target_nodes=target_nodes)
+
+    def client_kill_filter(self, _id=None, _type=None, addr=None,
+                           skipme=None, laddr=None, user=None,
+                           target_nodes=None):
+        """
+        Disconnects client(s) using a variety of filter options
+        :param id: Kills a client by its unique ID field
+        :param type: Kills a client by type where type is one of 'normal',
+        'master', 'slave' or 'pubsub'
+        :param addr: Kills a client by its 'address:port'
+        :param skipme: If True, then the client calling the command
+        will not get killed even if it is identified by one of the filter
+        options. If skipme is not provided, the server defaults to skipme=True
+        :param laddr: Kills a client by its 'local (bind) address:port'
+        :param user: Kills a client for a specific user name
         """
         args = []
-        if asynchronous:
-            args.append(b'ASYNC')
-        return self.execute_command('FLUSHALL', *args)
+        if _type is not None:
+            client_types = ('normal', 'master', 'slave', 'pubsub')
+            if str(_type).lower() not in client_types:
+                raise DataError("CLIENT KILL type must be one of %r" % (
+                    client_types,))
+            args.extend((b'TYPE', _type))
+        if skipme is not None:
+            if not isinstance(skipme, bool):
+                raise DataError("CLIENT KILL skipme must be a bool")
+            if skipme:
+                args.extend((b'SKIPME', b'YES'))
+            else:
+                args.extend((b'SKIPME', b'NO'))
+        if _id is not None:
+            args.extend((b'ID', _id))
+        if addr is not None:
+            args.extend((b'ADDR', addr))
+        if laddr is not None:
+            args.extend((b'LADDR', laddr))
+        if user is not None:
+            args.extend((b'USER', user))
+        if not args:
+            raise DataError("CLIENT KILL <filter> <value> ... ... <filter> "
+                            "<value> must specify at least one filter")
+        return self.execute_command('CLIENT KILL', *args,
+                                    target_nodes=target_nodes)
 
-    def flushdb(self, asynchronous=False):
-        """
-        Delete all keys in the database.
+    def client_kill(self, address, target_nodes=None):
+        "Disconnects the client at ``address`` (ip:port)"
+        return self.execute_command('CLIENT KILL', address,
+                                    target_nodes=target_nodes)
 
-        ``asynchronous`` indicates whether the operation is
-        executed asynchronously by the server.
-        """
-        args = []
-        if asynchronous:
-            args.append(b'ASYNC')
-        return self.execute_command('FLUSHDB', *args)
-
-    def client_list(self, _type=None):
+    def client_list(self, _type=None, target_nodes=None):
         """
         Returns a list of currently connected clients to the entire cluster.
         If type of client specified, only that type will be returned.
@@ -3307,19 +3373,100 @@ class ClusterManagementCommands:
             if str(_type).lower() not in client_types:
                 raise DataError("CLIENT LIST _type must be one of %r" % (
                     client_types,))
-            return self.execute_command('CLIENT LIST', b'TYPE', _type)
-        return self.execute_command('CLIENT LIST')
+            return self.execute_command('CLIENT LIST',
+                                        b'TYPE',
+                                        _type,
+                                        target_noes=target_nodes)
+        return self.execute_command('CLIENT LIST',
+                                    target_nodes=target_nodes)
 
-    def ping(self, target_nodes=None):
+    def client_pause(self, timeout, target_nodes=None):
         """
-        Ping the cluster's servers.
-        If no target nodes are specified, sent to all nodes and returns True if
-         the ping was successful across all nodes.
+        Suspend all the Redis clients for the specified amount of time
+        :param timeout: milliseconds to pause clients
+        """
+        if not isinstance(timeout, int):
+            raise DataError("CLIENT PAUSE timeout must be an integer")
+        return self.execute_command('CLIENT PAUSE', str(timeout),
+                                    target_nodes=target_nodes)
 
-        :target_nodes: 'ClusterNode' or 'list(ClusterNodes)'
-            The node/s to execute the command on
+    def client_reply(self, reply, target_nodes=None):
+        """Enable and disable redis server replies.
+        ``reply`` Must be ON OFF or SKIP,
+            ON - The default most with server replies to commands
+            OFF - Disable server responses to commands
+            SKIP - Skip the response of the immediately following command.
+
+        Note: When setting OFF or SKIP replies, you will need a client object
+        with a timeout specified in seconds, and will need to catch the
+        TimeoutError.
+              The test_client_reply unit test illustrates this, and
+              conftest.py has a client with a timeout.
+        See https://redis.io/commands/client-reply
         """
-        return self.execute_command('PING', target_nodes=target_nodes)
+        replies = ['ON', 'OFF', 'SKIP']
+        if reply not in replies:
+            raise DataError('CLIENT REPLY must be one of %r' % replies)
+        return self.execute_command("CLIENT REPLY", reply,
+                                    target_nodes=target_nodes)
+
+    def client_setname(self, name, target_nodes=None):
+        "Sets the current connection name"
+        return self.execute_command('CLIENT SETNAME', name,
+                                    target_nodes=target_nodes)
+
+    def client_trackinginfo(self, target_nodes=None):
+        """
+        Returns the information about the current client connection's
+        use of the server assisted client side cache.
+        See https://redis.io/commands/client-trackinginfo
+        """
+        return self.execute_command('CLIENT TRACKINGINFO',
+                                    target_nodes=target_nodes)
+
+    def client_unblock(self, client_id, error=False, target_nodes=None):
+        """
+        Unblocks a connection by its client id.
+        If ``error`` is True, unblocks the client with a special error message.
+        If ``error`` is False (default), the client is unblocked using the
+        regular timeout mechanism.
+        """
+        args = ['CLIENT UNBLOCK', int(client_id)]
+        if error:
+            args.append(b'ERROR')
+        return self.execute_command(*args, target_nodes=target_nodes)
+
+    def client_unpause(self, target_nodes=None):
+        """
+        Unpause all redis clients
+        """
+        return self.execute_command('CLIENT UNPAUSE',
+                                    target_nodes=target_nodes)
+
+    def config_get(self, pattern="*", target_nodes=None):
+        """Return a dictionary of configuration based on the ``pattern``"""
+        return self.execute_command('CONFIG GET',
+                                    pattern,
+                                    target_nodes=target_nodes)
+
+    def config_resetstat(self, target_nodes=None):
+        """Reset runtime statistics"""
+        return self.execute_command('CONFIG RESETSTAT',
+                                    target_nodes=target_nodes)
+
+    def config_rewrite(self, target_nodes=None):
+        """
+        Rewrite config file with the minimal change to reflect running config.
+        """
+        return self.execute_command('CONFIG REWRITE',
+                                    target_nodes=target_nodes)
+
+    def config_set(self, name, value, target_nodes=None):
+        "Set config item ``name`` with ``value``"
+        return self.execute_command('CONFIG SET',
+                                    name,
+                                    value,
+                                    target_nodes=target_nodes)
 
     def dbsize(self, target_nodes=None):
         """
@@ -3330,23 +3477,240 @@ class ClusterManagementCommands:
         :target_nodes: 'ClusterNode' or 'list(ClusterNodes)'
             The node/s to execute the command on
         """
-        return self.execute_command('DBSIZE', target_nodes=target_nodes)
+        return self.execute_command('DBSIZE',
+                                    target_nodes=target_nodes)
 
-    def config_set(self, name, value):
-        "Set config item ``name`` with ``value``"
-        return self.execute_command('CONFIG SET', name, value)
+    def debug_object(self, key):
+        raise NotImplementedError(
+            "DEBUG OBJECT is intentionally not implemented in the client."
+        )
 
-    def client_setname(self, name):
-        "Sets the current connection name in all nodes"
-        return self.execute_command('CLIENT SETNAME', name)
+    def debug_segfault(self):
+        raise NotImplementedError(
+            "DEBUG SEGFAULT is intentionally not implemented in the client."
+        )
 
-    def client_getname(self):
+    def echo(self, value, target_nodes):
+        """Echo the string back from the server"""
+        return self.execute_command('ECHO', value,
+                                    target_nodes=target_nodes)
+
+    def flushall(self, asynchronous=False, target_nodes=None):
         """
-        Returns the current connection name from all nodes.
-        The result will be a dictionary with the IP and
-        connection name.
+        Delete all keys in the database on all hosts.
+        In cluster mode this method is the same as flushdb
+
+        ``asynchronous`` indicates whether the operation is
+        executed asynchronously by the server.
         """
-        return self.execute_command('CLIENT GETNAME')
+        args = []
+        if asynchronous:
+            args.append(b'ASYNC')
+        return self.execute_command('FLUSHALL',
+                                    *args,
+                                    target_nodes=target_nodes)
+
+    def flushdb(self, asynchronous=False, target_nodes=None):
+        """
+        Delete all keys in the database.
+
+        ``asynchronous`` indicates whether the operation is
+        executed asynchronously by the server.
+        """
+        args = []
+        if asynchronous:
+            args.append(b'ASYNC')
+        return self.execute_command('FLUSHDB',
+                                    *args,
+                                    target_nodes=target_nodes)
+
+    def info(self, section=None, target_nodes=None):
+        """
+        Returns a dictionary containing information about the Redis server
+
+        The ``section`` option can be used to select a specific section
+        of information
+
+        The section option is not supported by older versions of Redis Server,
+        and will generate ResponseError
+        """
+        if section is None:
+            return self.execute_command('INFO',
+                                        target_nodes=target_nodes)
+        else:
+            return self.execute_command('INFO',
+                                        section,
+                                        target_nodes=target_nodes)
+
+    def lastsave(self, target_nodes=None):
+        """
+        Return a Python datetime object representing the last time the
+        Redis database was saved to disk
+        """
+        return self.execute_command('LASTSAVE',
+                                    target_nodes=target_nodes)
+
+    def memory_doctor(self):
+        raise NotImplementedError(
+            "MEMORY DOCTOR is intentionally not implemented in the client."
+        )
+
+    def memory_help(self):
+        raise NotImplementedError(
+            "MEMORY HELP is intentionally not implemented in the client."
+        )
+
+    def memory_malloc_stats(self, target_nodes=None):
+        """Return an internal statistics report from the memory allocator."""
+        return self.execute_command('MEMORY MALLOC-STATS',
+                                    target_nodes=target_nodes)
+
+    def memory_purge(self, target_nodes=None):
+        """Attempts to purge dirty pages for reclamation by allocator"""
+        return self.execute_command('MEMORY PURGE',
+                                    target_nodes=target_nodes)
+
+    def memory_stats(self, target_nodes=None):
+        """Return a dictionary of memory stats"""
+        return self.execute_command('MEMORY STATS',
+                                    target_nodes=target_nodes)
+
+    def memory_usage(self, key, samples=None):
+        """
+        Return the total memory usage for key, its value and associated
+        administrative overheads.
+
+        For nested data structures, ``samples`` is the number of elements to
+        sample. If left unspecified, the server's default is 5. Use 0 to sample
+        all elements.
+        """
+        args = []
+        if isinstance(samples, int):
+            args.extend([b'SAMPLES', samples])
+        return self.execute_command('MEMORY USAGE', key, *args)
+
+    def migrate(self, host, source_node, port, keys, destination_db, timeout,
+                copy=False, replace=False, auth=None):
+        """
+        Migrate 1 or more keys from the source_node Redis server to a different
+        server specified by the ``host``, ``port`` and ``destination_db``.
+
+        The ``timeout``, specified in milliseconds, indicates the maximum
+        time the connection between the two servers can be idle before the
+        command is interrupted.
+
+        If ``copy`` is True, the specified ``keys`` are NOT deleted from
+        the source server.
+
+        If ``replace`` is True, this operation will overwrite the keys
+        on the destination server if they exist.
+
+        If ``auth`` is specified, authenticate to the destination server with
+        the password provided.
+        """
+        keys = list_or_args(keys, [])
+        if not keys:
+            raise DataError('MIGRATE requires at least one key')
+        pieces = []
+        if copy:
+            pieces.append(b'COPY')
+        if replace:
+            pieces.append(b'REPLACE')
+        if auth:
+            pieces.append(b'AUTH')
+            pieces.append(auth)
+        pieces.append(b'KEYS')
+        pieces.extend(keys)
+        return self.execute_command('MIGRATE', host, port, '', destination_db,
+                                    timeout, *pieces,
+                                    target_nodes=source_node)
+
+    def object(self, infotype, key):
+        """Return the encoding, idletime, or refcount about the key"""
+        return self.execute_command('OBJECT', infotype, key, infotype=infotype)
+
+    def ping(self, target_nodes=None):
+        """
+        Ping the cluster's servers.
+        If no target nodes are specified, sent to all nodes and returns True if
+         the ping was successful across all nodes.
+
+        :target_nodes: 'ClusterNode' or 'list(ClusterNodes)'
+            The node/s to execute the command on
+        """
+        return self.execute_command('PING',
+                                    target_nodes=target_nodes)
+
+    def save(self):
+        """
+        Tell the Redis server to save its data to disk,
+        blocking until the save is complete
+        """
+        return self.execute_command('SAVE')
+
+    def shutdown(self, save=False, nosave=False):
+        """Shutdown the Redis server.  If Redis has persistence configured,
+        data will be flushed before shutdown.  If the "save" option is set,
+        a data flush will be attempted even if there is no persistence
+        configured.  If the "nosave" option is set, no data flush will be
+        attempted.  The "save" and "nosave" options cannot both be set.
+        """
+        if save and nosave:
+            raise DataError('SHUTDOWN save and nosave cannot both be set')
+        args = ['SHUTDOWN']
+        if save:
+            args.append('SAVE')
+        if nosave:
+            args.append('NOSAVE')
+        try:
+            self.execute_command(*args)
+        except ConnectionError:
+            # a ConnectionError here is expected
+            return
+        raise RedisError("SHUTDOWN seems to have failed.")
+
+    def slowlog_get(self, num=None, target_nodes=None):
+        """
+        Get the entries from the slowlog. If ``num`` is specified, get the
+        most recent ``num`` items.
+        """
+        args = ['SLOWLOG GET']
+        if num is not None:
+            args.append(num)
+
+        return self.execute_command(*args,
+                                    target_nodes=target_nodes)
+
+    def slowlog_len(self, target_nodes=None):
+        "Get the number of items in the slowlog"
+        return self.execute_command('SLOWLOG LEN',
+                                    target_nodes=target_nodes)
+
+    def slowlog_reset(self, target_nodes=None):
+        "Remove all items in the slowlog"
+        return self.execute_command('SLOWLOG RESET',
+                                    target_nodes=target_nodes)
+
+    def time(self, target_nodes=None):
+        """
+        Returns the server time as a 2-item tuple of ints:
+        (seconds since epoch, microseconds into this second).
+        """
+        return self.execute_command('TIME', target_nodes=target_nodes)
+
+    def wait(self, num_replicas, timeout, target_nodes=None):
+        """
+        Redis synchronous replication
+        That returns the number of replicas that processed the query when
+        we finally have at least ``num_replicas``, or when the ``timeout`` was
+        reached.
+
+        In cluster mode the WAIT command will be sent to all primaries
+        and the result will be summed up
+        """
+        return self.execute_command('WAIT', num_replicas,
+                                    timeout,
+                                    target_nodes=target_nodes)
 
 
 class ClusterCommands(ClusterManagementCommands, ClusterMultiKeyCommands,
