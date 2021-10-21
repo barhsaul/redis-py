@@ -201,12 +201,17 @@ class RedisCluster(ClusterCommands, object):
                 "CLIENT LIST",
                 "CLIENT SETNAME",
                 "CLIENT GETNAME",
+                "CONFIG GET",
                 "CONFIG SET",
+                "CONFIG REWRITE",
+                "CONFIG RESETSTAT",
                 "TIME",
                 "PUBSUB CHANNELS",
                 "PUBSUB NUMPAT",
                 "PUBSUB NUMSUB",
-                "PING"
+                "PING",
+                "INFO",
+                "SHUTDOWN"
             ],
             ALL_NODES,
         ),
@@ -216,7 +221,27 @@ class RedisCluster(ClusterCommands, object):
                 "SCAN",
                 "FLUSHALL",
                 "FLUSHDB",
-                "DBSIZE"
+                "DBSIZE",
+                "BGSAVE",
+                "SLOWLOG GET",
+                "SLOWLOG LEN",
+                "SLOWLOG RESET",
+                "WAIT",
+                "TIME",
+                "SAVE",
+                "MEMORY PURGE",
+                "MEMORY MALLOC-STATS",
+                "MEMORY STATS",
+                "LASTSAVE",
+                "CLIENT TRACKINGINFO",
+                "CLIENT PAUSE",
+                "CLIENT UNPAUSE",
+                "CLIENT UNBLOCK",
+                "CLIENT ID",
+                "CLIENT REPLY",
+                "CLIENT GETREDIR",
+                "CLIENT INFO",
+                "CLIENT KILL"
             ],
             ALL_PRIMARIES,
         ),
@@ -288,13 +313,25 @@ class RedisCluster(ClusterCommands, object):
         list_keys_to_dict([
             "PING",
             "CONFIG SET",
+            "CONFIG REWRITE",
+            "CONFIG RESETSTAT",
             "CLIENT SETNAME",
+            "BGSAVE",
+            "SLOWLOG RESET",
+            "SAVE",
+            "MEMORY PURGE",
+            "CLIENT PAUSE",
+            "CLIENT UNPAUSE",
         ], lambda command, res: all(res.values()) if isinstance(res, dict)
             else res),
         list_keys_to_dict([
-            "DBSIZE"
+            "DBSIZE",
+            "WAIT",
         ], lambda command, res: sum(res.values()) if isinstance(res, dict)
-            else res)
+            else res),
+        list_keys_to_dict([
+            "CLIENT UNBLOCK",
+        ], lambda command, res: 1 if sum(res.values()) > 0 else 0)
     )
 
     def __init__(
