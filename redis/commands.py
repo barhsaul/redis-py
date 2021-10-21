@@ -3155,13 +3155,18 @@ class ClusterMultiKeyCommands:
 
         # Call MGET for every slot and concatenate
         # the results
-        all_results = []
+        # We must make sure that the keys are returned in order
+        all_results = {}
         for slot_keys in slots_to_keys.values():
-            one_slot_results = self.execute_command(
+            slot_values = self.execute_command(
                                'MGET', *slot_keys, **options)
-            all_results.extend(one_slot_results)
 
-        return all_results
+            slot_results = dict(zip(slot_keys, slot_values))
+            all_results.update(slot_results)
+
+        # Sort the results
+        vals_in_order = [all_results[key] for key in keys]
+        return vals_in_order
 
     def mset_nonatomic(self, mapping):
         """
