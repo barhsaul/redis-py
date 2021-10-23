@@ -351,6 +351,7 @@ class RedisCluster(ClusterCommands, object):
             startup_nodes=None,
             cluster_error_retry_attempts=3,
             require_full_coverage=True,
+            skip_full_coverage_check=False,
             reinitialize_steps=10,
             read_from_replicas=False,
             url=None,
@@ -369,6 +370,11 @@ class RedisCluster(ClusterCommands, object):
             creation will succeed only if 'cluster-require-full-coverage'
             configuration is set to 'no' in all of the cluster's nodes.
             Otherwise, RedisClusterException will be thrown.
+        :skip_full_coverage_check: 'bool'
+            If require_full_coverage is set to False, a check of
+            cluster-require-full-coverage config will be executed against all
+            nodes. Set skip_full_coverage_check to True to skip this check.
+            Useful for clusters without the CONFIG command (like ElastiCache)
        :read_from_replicas: 'bool'
             Enable read from replicas in READONLY mode. You can read possibly
             stale data.
@@ -448,6 +454,7 @@ class RedisCluster(ClusterCommands, object):
             startup_nodes=startup_nodes,
             from_url=from_url,
             require_full_coverage=require_full_coverage,
+            skip_full_coverage_check=skip_full_coverage_check,
             **kwargs,
         )
 
@@ -935,13 +942,15 @@ class LoadBalancer:
 
 class NodesManager:
     def __init__(self, startup_nodes, from_url=False,
-                 require_full_coverage=True, lock=None, **kwargs):
+                 require_full_coverage=True, skip_full_coverage_check=False,
+                 lock=None, **kwargs):
         self.nodes_cache = {}
         self.slots_cache = {}
         self.startup_nodes = {}
         self.populate_startup_nodes(startup_nodes)
         self.from_url = from_url
         self._require_full_coverage = require_full_coverage
+        self._skip_full_coverage_check = skip_full_coverage_check
         self._moved_exception = None
         self.connection_kwargs = kwargs
         self.read_load_balancer = None
@@ -1250,7 +1259,8 @@ class NodesManager:
                 # continue with partial coverage.
                 # see Redis Cluster configuration parameters in
                 # https://redis.io/topics/cluster-tutorial
-                if self.cluster_require_full_coverage(tmp_nodes_cache):
+                if not self._skip_full_coverage_check and \
+                        self.cluster_require_full_coverage(tmp_nodes_cache):
                     raise RedisClusterException(
                         'Not all slots are covered but the cluster\'s '
                         'configuration requires full coverage. Set '

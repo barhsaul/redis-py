@@ -1152,6 +1152,32 @@ class TestNodesManager:
 
         assert 5460 not in rc.nodes_manager.slots_cache
 
+    def test_init_slots_cache_not_require_full_coverage_skips_check(self):
+        """
+        Test that when require_full_coverage is set to False and
+        skip_full_coverage_check is set to true, the cluster initialization
+        succeed without checking the nodes' Redis configurations
+        """
+        # Missing slot 5460
+        cluster_slots = [
+            [0, 5459, ['127.0.0.1', 7000], ['127.0.0.1', 7003]],
+            [5461, 10922, ['127.0.0.1', 7001],
+             ['127.0.0.1', 7004]],
+            [10923, 16383, ['127.0.0.1', 7002],
+             ['127.0.0.1', 7005]],
+        ]
+
+        with patch.object(NodesManager,
+                          'cluster_require_full_coverage') as conf_check_mock:
+            rc = get_mocked_redis_client(host=default_host, port=default_port,
+                                         cluster_slots=cluster_slots,
+                                         require_full_coverage=False,
+                                         skip_full_coverage_check=True,
+                                         coverage_result='no')
+
+            assert conf_check_mock.called is False
+            assert 5460 not in rc.nodes_manager.slots_cache
+
     def test_init_slots_cache(self):
         """
         Test that slots cache can in initialized and all slots are covered
