@@ -1,4 +1,5 @@
 import pytest
+import datetime
 from time import sleep
 from unittest.mock import call, patch, DEFAULT, Mock
 from redis import Redis
@@ -14,7 +15,13 @@ from redis.exceptions import (
     RedisClusterException,
     RedisError
 )
-from .conftest import skip_if_not_cluster_mode, _get_client
+
+from redis.crc import key_slot
+from .conftest import (
+    skip_if_not_cluster_mode,
+    _get_client,
+    skip_if_server_version_lt
+)
 
 default_host = "127.0.0.1"
 default_port = 7000
@@ -30,6 +37,31 @@ default_cluster_slots = [
         ['127.0.0.1', 7002, 'node_2']
     ]
 ]
+
+
+@pytest.fixture()
+def slowlog(request, r):
+    """
+    Set the slowlog threshold to 0, and the
+    max length to 128. This will force every
+    command into the slowlog and allow us
+    to test it
+    """
+    # Save old values
+    current_config = r.config_get(
+                        target_nodes=r.get_primaries()[0])
+    old_slower_than_value = current_config['slowlog-log-slower-than']
+    old_max_legnth_value = current_config['slowlog-max-len']
+
+    # Function to restore the old values
+    def cleanup():
+        r.config_set('slowlog-log-slower-than', old_slower_than_value)
+        r.config_set('slowlog-max-len', old_max_legnth_value)
+    request.addfinalizer(cleanup)
+
+    # Set the new values
+    r.config_set('slowlog-log-slower-than', 0)
+    r.config_set('slowlog-max-len', 128)
 
 
 def get_mocked_redis_client(func=None, *args, **kwargs):
@@ -830,14 +862,205 @@ class TestClusterRedisCommands:
     def test_readwrite(self):
         r = get_mocked_redis_client(host=default_host, port=default_port)
         node = r.get_random_node()
-        all_replicas = r.get_replicas()
         mock_all_nodes_resp(r, 'OK')
+        all_replicas = r.get_replicas()
         assert r.readwrite(node) is True
         all_replicas_results = r.readwrite()
         for res in all_replicas_results.values():
             assert res is True
         for replica in all_replicas:
             assert replica.redis_connection.connection.read_response.called
+
+    def test_bgsave(self, r):
+        assert r.bgsave()
+        sleep(0.3)
+        assert r.bgsave(True)
+
+    def test_info(self, r):
+        # Map keys to same slot
+        r.set('x{1}', 1)
+        r.set('y{1}', 2)
+        r.set('z{1}', 3)
+        # Get node that handles the slot
+        slot = r.keyslot('x{1}')
+        node = r.nodes_manager.get_node_from_slot(slot)
+        # Run info on that node
+        info = r.info(target_nodes=node)
+        assert isinstance(info, dict)
+        assert info['db0']['keys'] == 3
+
+    def test_slowlog_get(self, r, slowlog):
+        assert r.slowlog_reset()
+        unicode_string = chr(3456) + 'abcd' + chr(3421)
+        r.get(unicode_string)
+
+        slot = r.keyslot(unicode_string)
+        node = r.nodes_manager.get_node_from_slot(slot)
+        slowlog = r.slowlog_get(target_nodes=node)
+        assert isinstance(slowlog, list)
+        commands = [log['command'] for log in slowlog]
+
+        get_command = b' '.join((b'GET', unicode_string.encode('utf-8')))
+        assert get_command in commands
+        assert b'SLOWLOG RESET' in commands
+
+        # the order should be ['GET <uni string>', 'SLOWLOG RESET'],
+        # but if other clients are executing commands at the same time, there
+        # could be commands, before, between, or after, so just check that
+        # the two we care about are in the appropriate order.
+        assert commands.index(get_command) < commands.index(b'SLOWLOG RESET')
+
+        # make sure other attributes are typed correctly
+        assert isinstance(slowlog[0]['start_time'], int)
+        assert isinstance(slowlog[0]['duration'], int)
+
+    def test_slowlog_get_limit(self, r, slowlog):
+        assert r.slowlog_reset()
+        r.get('foo')
+        node = r.nodes_manager.get_node_from_slot(key_slot(b'foo'))
+        slowlog = r.slowlog_get(1, target_nodes=node)
+        assert isinstance(slowlog, list)
+        # only one command, based on the number we passed to slowlog_get()
+        assert len(slowlog) == 1
+
+    def test_slowlog_length(self, r, slowlog):
+        r.get('foo')
+        node = r.nodes_manager.get_node_from_slot(key_slot(b'foo'))
+        slowlog_len = r.slowlog_len(target_nodes=node)
+        assert isinstance(slowlog_len, int)
+
+    def test_time(self, r):
+        t = r.time(target_nodes=r.get_primaries()[0])
+        assert len(t) == 2
+        assert isinstance(t[0], int)
+        assert isinstance(t[1], int)
+
+    @skip_if_server_version_lt('4.0.0')
+    def test_memory_usage(self, r):
+        r.set('foo', 'bar')
+        assert isinstance(r.memory_usage('foo'), int)
+
+    @skip_if_server_version_lt('4.0.0')
+    def test_memory_malloc_stats(self, r):
+        assert r.memory_malloc_stats()
+
+    @skip_if_server_version_lt('4.0.0')
+    def test_memory_stats(self, r):
+        # put a key into the current db to make sure that "db.<current-db>"
+        # has data
+        r.set('foo', 'bar')
+        node = r.nodes_manager.get_node_from_slot(key_slot(b'foo'))
+        stats = r.memory_stats(target_nodes=node)
+        assert isinstance(stats, dict)
+        for key, value in stats.items():
+            if key.startswith('db.'):
+                assert isinstance(value, dict)
+
+    @skip_if_server_version_lt('4.0.0')
+    def test_memory_help(self, r):
+        with pytest.raises(NotImplementedError):
+            r.memory_help()
+
+    @skip_if_server_version_lt('4.0.0')
+    def test_memory_doctor(self, r):
+        with pytest.raises(NotImplementedError):
+            r.memory_doctor()
+
+    def test_object(self, r):
+        r['a'] = 'foo'
+        assert isinstance(r.object('refcount', 'a'), int)
+        assert isinstance(r.object('idletime', 'a'), int)
+        assert r.object('encoding', 'a') in (b'raw', b'embstr')
+        assert r.object('idletime', 'invalid-key') is None
+
+    def test_lastsave(self, r):
+        node = r.get_primaries()[0]
+        assert isinstance(r.lastsave(target_nodes=node),
+                          datetime.datetime)
+
+    def test_echo(self, r):
+        node = r.get_primaries()[0]
+        assert r.echo('foo bar', node) == b'foo bar'
+
+    @skip_if_server_version_lt('1.0.0')
+    def test_debug_segfault(self, r):
+        with pytest.raises(NotImplementedError):
+            r.debug_segfault()
+
+    def test_config_resetstat(self, r):
+        node = r.get_primaries()[0]
+        r.ping(target_nodes=node)
+        prior_commands_processed = \
+            int(r.info(target_nodes=node)['total_commands_processed'])
+        assert prior_commands_processed >= 1
+        r.config_resetstat(target_nodes=node)
+        reset_commands_processed = \
+            int(r.info(target_nodes=node)['total_commands_processed'])
+        assert reset_commands_processed < prior_commands_processed
+
+    @skip_if_server_version_lt('6.2.0')
+    def test_client_trackinginfo(self, r):
+        node = r.get_primaries()[0]
+        res = r.client_trackinginfo(target_nodes=node)
+        assert len(res) > 2
+        assert 'prefixes' in res
+
+    @skip_if_server_version_lt('2.9.50')
+    def test_client_pause(self, r):
+        node = r.get_primaries()[0]
+        assert r.client_pause(1, target_nodes=node)
+        assert r.client_pause(timeout=1, target_nodes=node)
+        with pytest.raises(RedisError):
+            r.client_pause(timeout='not an integer', target_nodes=node)
+
+    @skip_if_server_version_lt('6.2.0')
+    def test_client_unpause(self, r):
+        assert r.client_unpause()
+
+    @skip_if_server_version_lt('5.0.0')
+    def test_client_id(self, r):
+        node = r.get_primaries()[0]
+        assert r.client_id(target_nodes=node) > 0
+
+    @skip_if_server_version_lt('5.0.0')
+    def test_client_unblock(self, r):
+        node = r.get_primaries()[0]
+        myid = r.client_id(target_nodes=node)
+        assert not r.client_unblock(myid, target_nodes=node)
+        assert not r.client_unblock(myid, error=True, target_nodes=node)
+        assert not r.client_unblock(myid, error=False, target_nodes=node)
+
+    @skip_if_server_version_lt('6.0.0')
+    def test_client_getredir(self, r):
+        node = r.get_primaries()[0]
+        assert isinstance(r.client_getredir(target_nodes=node), int)
+        assert r.client_getredir(target_nodes=node) == -1
+
+    @skip_if_server_version_lt('6.2.0')
+    def test_client_info(self, r):
+        node = r.get_primaries()[0]
+        info = r.client_info(target_nodes=node)
+        assert isinstance(info, dict)
+        assert 'addr' in info
+
+    @skip_if_server_version_lt('2.6.9')
+    def test_client_kill(self, r, r2):
+        node = r.get_primaries()[0]
+        r.client_setname('redis-py-c1')
+        r2.client_setname('redis-py-c2')
+        clients = [client for client in r.client_list()[node.name]
+                   if client.get('name') in ['redis-py-c1', 'redis-py-c2']]
+        assert len(clients) == 2
+        clients_by_name = dict([(client.get('name'), client)
+                                for client in clients])
+
+        client_addr = clients_by_name['redis-py-c2'].get('addr')
+        assert r.client_kill(client_addr, target_nodes=node) is True
+
+        clients = [client for client in r.client_list()[node.name]
+                   if client.get('name') in ['redis-py-c1', 'redis-py-c2']]
+        assert len(clients) == 1
+        assert clients[0].get('name') == 'redis-py-c1'
 
 
 @skip_if_not_cluster_mode()
