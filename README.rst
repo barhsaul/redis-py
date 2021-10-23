@@ -991,8 +991,8 @@ RedisCluster instance can be directly used to execute Redis commands. When a
 command is being executed through the cluster instance, the target node(s) will
 be internally determined. When using a key-based command, the target node will
 be the node that holds the key's slot.
-Cluster management commands or other cluster commands have predefined node group
-targets (all-primaries, all-nodes, random-node, all-replicas), which are
+Cluster management commands or other cluster commands have predefined node
+group targets (all-primaries, all-nodes, random-node, all-replicas), which are
 outlined in the command’s function documentation.
 For example, ‘KEYS’ command will be sent to all primaries and return all keys
 in the cluster, and ‘CLUSTER NODES’ command will be sent to a random node.
@@ -1013,17 +1013,54 @@ the command on.
     [b'foo1', b'foo2']
     >>> # target-nodes: all-nodes
     >>> rc.flushall()
+
+
+Specifying Target Nodes:
+As mentioned above, some RedisCluster commands will require you to provide the
+target node/s that you want to execute the command on, and in other cases, the
+target node will be determined by the client itself. That being said, ALL
+RedisCluster commands can be executed against a specific node or a group of
+nodes by passing the command kwarg `target_nodes`.
+The best practice is to specify target nodes using RedisCluster class's node
+flags: PRIMARIES, REPLICAS, ALL_NODES, RANDOM. When a nodes flag is passed
+along with a command, it will be internally resolved to the relevant node/s.
+If the nodes topology of the cluster changes during the execution of a command,
+the client will be able to resolve the nodes flag again with the new topology
+and attempt to retry executing the command.
+
+.. code-block:: pycon
+
+    >>> from redis.cluster import RedisCluster as Redis
     >>> # run cluster-meet command on all of the cluster's nodes
-    >>> rc.cluster_meet(rc.get_nodes(), '127.0.0.1', 6379)
-    >>> # ping all primaries
-    >>> rc.ping(rc.get_primaries())
+    >>> rc.cluster_meet(Redis.ALL_NODES, '127.0.0.1', 6379)
+    >>> # ping all replicas
+    >>> rc.ping(Redis.REPLICAS)
     >>> # ping a specific node
-    >>> rc.ping(rc.get_random_node())
-    >>> # ping all nodes in the cluster, default behavior
+    >>> rc.ping(Redis.RANDOM)
+    >>> # ping all nodes in the cluster, default command behavior
     >>> rc.ping()
+    >>> # execute bgsave in all primaries
+    >>> rc.bgsave(Redis.PRIMARIES)
+
+You could also pass ClusterNodes directly if you want to execute a command on a
+specific node / node group that isn't addressed by the nodes flag. However, if
+the command execution fails due to cluster topology changes, a retry attempt
+will not be made, since the passed target node/s may no longer be valid, and
+the relevant cluster or connection error will be returned.
+
+
+.. code-block:: pycon
+
+    >>> node = rc.get_node('localhost', 6379)
+    >>> # Get the keys only for that specific node
+    >>> rc.keys(node)
+    >>> # get Redis info from a subset of primaries
+    >>> subset_primaries = [node for node in rc.get_primaries() if node.port > 6378]
+    >>> rc.info(subset_primaries)
 
 In addition, you can use the RedisCluster instance to obtain the Redis instance
-of a specific node and execute commands on that node directly.
+of a specific node and execute commands on that node directly. The Redis client,
+however, cannot handle cluster failures and retries.
 
 .. code-block:: pycon
 

@@ -85,11 +85,7 @@ def parse_cluster_slots(resp, **options):
 
 PRIMARY = "primary"
 REPLICA = "replica"
-ALL_PRIMARIES = "all-primaries"
-ALL_REPLICAS = "all-replicas"
-ALL_NODES = "all-nodes"
-RANDOM = "random"
-SLOT_ID = "slot-id"
+SLOT_ID = 'slot-id'
 
 REDIS_ALLOWED_KEYS = (
     "charset",
@@ -102,6 +98,7 @@ REDIS_ALLOWED_KEYS = (
     "errors",
     "host",
     "max_connections",
+    "nodes_flag",
     "redis_connect_func",
     "password",
     "port",
@@ -195,6 +192,19 @@ class ClusterParser(DefaultParser):
 
 class RedisCluster(ClusterCommands, object):
     RedisClusterRequestTTL = 16
+
+    PRIMARIES = "all-primaries"
+    REPLICAS = "all-replicas"
+    ALL_NODES = "all-nodes"
+    RANDOM = "random"
+
+    NODE_FLAGS = {
+        PRIMARIES,
+        REPLICAS,
+        ALL_NODES,
+        RANDOM
+    }
+
     COMMAND_FLAGS = dict_merge(
         list_keys_to_dict(
             [
@@ -218,14 +228,14 @@ class RedisCluster(ClusterCommands, object):
                 "FLUSHDB",
                 "DBSIZE"
             ],
-            ALL_PRIMARIES,
+            PRIMARIES,
         ),
         list_keys_to_dict(
             [
                 "READONLY",
                 "READWRITE",
             ],
-            ALL_REPLICAS,
+            REPLICAS,
         ),
         list_keys_to_dict(
             [
@@ -392,6 +402,7 @@ class RedisCluster(ClusterCommands, object):
         )
         self.cluster_error_retry_attempts = cluster_error_retry_attempts
         self.command_flags = self.__class__.COMMAND_FLAGS.copy()
+        self.node_flags = self.__class__.NODE_FLAGS.copy()
         self.read_from_replicas = read_from_replicas
         self.reinitialize_counter = 0
         self.reinitialize_steps = reinitialize_steps
@@ -546,15 +557,21 @@ class RedisCluster(ClusterCommands, object):
 
     def _determine_nodes(self, *args, **kwargs):
         command = args[0]
-        command_flag = self.command_flags.get(command)
+        nodes_flag = kwargs.pop("nodes_flag", None)
+        if nodes_flag is not None:
+            # nodes flag passed by the user
+            command_flag = nodes_flag
+        else:
+            # get the predefined nodes group for this command
+            command_flag = self.command_flags.get(command)
 
-        if command_flag == RANDOM:
+        if command_flag == self.__class__.RANDOM:
             return [self.get_random_node()]
-        elif command_flag == ALL_PRIMARIES:
+        elif command_flag == self.__class__.PRIMARIES:
             return self.get_primaries()
-        elif command_flag == ALL_REPLICAS:
+        elif command_flag == self.__class__.REPLICAS:
             return self.get_replicas()
-        elif command_flag == ALL_NODES:
+        elif command_flag == self.__class__.ALL_NODES:
             return self.get_nodes()
         else:
             # get the node that holds the key's slot
@@ -607,6 +624,30 @@ class RedisCluster(ClusterCommands, object):
             # single key command
             return self.keyslot(keys[0])
 
+    def is_nodes_flag(self, target_nodes):
+        return isinstance(target_nodes, str) \
+            and target_nodes in self.node_flags
+
+    def parse_target_nodes(self, target_nodes):
+        if isinstance(target_nodes, list):
+            nodes = target_nodes
+        elif isinstance(target_nodes, ClusterNode):
+            # Supports passing a single ClusterNode as a variable
+            nodes = [target_nodes]
+        elif isinstance(target_nodes, dict):
+            # Supports dictionaries of the format {node_name: node}.
+            # It enables to execute commands with multi nodes as follows:
+            # rc.cluster_save_config(rc.get_primaries())
+            nodes = target_nodes.values()
+        else:
+            raise TypeError("target_nodes type can be one of the "
+                            "followings: node_flag (PRIMARIES, "
+                            "REPLICAS, RANDOM, ALL_NODES),"
+                            "ClusterNode, list<ClusterNode>, or "
+                            "dict<any, ClusterNode>. The passed type is {0}".
+                            format(type(target_nodes)))
+        return nodes
+
     def execute_command(self, *args, **kwargs):
         """
         Wrapper for ClusterDownError and ConnectionError error handling.
@@ -618,21 +659,16 @@ class RedisCluster(ClusterCommands, object):
         If it reaches the number of times, the command will raise the exception
 
         Key argument :target_nodes: can be passed with the following types:
+            nodes_flag: PRIMARIES, REPLICAS, ALL_NODES, RANDOM
             ClusterNode
             list<ClusterNode>
             dict<Any, ClusterNode>
         """
+        target_nodes_specified = False
         target_nodes = kwargs.pop("target_nodes", None)
-        target_nodes_specified = target_nodes is not None
-        if target_nodes_specified:
-            if isinstance(target_nodes, ClusterNode):
-                # Supports passing a single ClusterNode as a variable
-                target_nodes = [target_nodes]
-            elif isinstance(target_nodes, dict):
-                # Supports dictionaries of the format {node_name: node}.
-                # It enables to execute commands with multi nodes as follows:
-                # rc.cluster_save_config(rc.get_primaries())
-                target_nodes = target_nodes.values()
+        if target_nodes is not None and not self.is_nodes_flag(target_nodes):
+            target_nodes = self.parse_target_nodes(target_nodes)
+            target_nodes_specified = True
         # If ClusterDownError/ConnectionError were thrown, the nodes
         # and slots cache were reinitialized. We will retry executing the
         # command with the updated cluster setup only when the target nodes
@@ -649,7 +685,8 @@ class RedisCluster(ClusterCommands, object):
                 res = {}
                 if not target_nodes_specified:
                     # Determine the nodes to execute the command on
-                    target_nodes = self._determine_nodes(*args, **kwargs)
+                    target_nodes = self._determine_nodes(
+                        *args, **kwargs, nodes_flag=target_nodes)
                     if not target_nodes:
                         raise RedisClusterException(
                             "No targets were found to execute"
