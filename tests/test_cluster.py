@@ -195,6 +195,59 @@ class TestRedisClusterObj:
         assert str(ex.value).startswith("No way to dispatch this command to "
                                         "Redis Cluster. Missing key.")
 
+    def test_execute_command_node_flag_primaries(self, r):
+        """
+        Test command execution with nodes flag PRIMARIES
+        """
+        primaries = r.get_primaries()
+        replicas = r.get_replicas()
+        mock_all_nodes_resp(r, 'PONG')
+        assert r.ping(RedisCluster.PRIMARIES) is True
+        for primary in primaries:
+            conn = primary.redis_connection.connection
+            assert conn.read_response.called is True
+        for replica in replicas:
+            conn = replica.redis_connection.connection
+            assert conn.read_response.called is not True
+
+    def test_execute_command_node_flag_replicas(self, r):
+        """
+        Test command execution with nodes flag REPLICAS
+        """
+        primaries = r.get_primaries()
+        replicas = r.get_replicas()
+        mock_all_nodes_resp(r, 'PONG')
+        assert r.ping(RedisCluster.REPLICAS) is True
+        for replica in replicas:
+            conn = replica.redis_connection.connection
+            assert conn.read_response.called is True
+        for primary in primaries:
+            conn = primary.redis_connection.connection
+            assert conn.read_response.called is not True
+
+    def test_execute_command_node_flag_all_nodes(self, r):
+        """
+        Test command execution with nodes flag ALL_NODES
+        """
+        mock_all_nodes_resp(r, 'PONG')
+        assert r.ping(RedisCluster.ALL_NODES) is True
+        for node in r.get_nodes():
+            conn = node.redis_connection.connection
+            assert conn.read_response.called is True
+
+    def test_execute_command_node_flag_random(self, r):
+        """
+        Test command execution with nodes flag RANDOM
+        """
+        mock_all_nodes_resp(r, 'PONG')
+        assert r.ping(RedisCluster.RANDOM) is True
+        called_count = 0
+        for node in r.get_nodes():
+            conn = node.redis_connection.connection
+            if conn.read_response.called is True:
+                called_count += 1
+        assert called_count == 1
+
     @pytest.mark.filterwarnings("ignore:AskError")
     def test_ask_redirection(self, r):
         """
