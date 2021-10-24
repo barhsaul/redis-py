@@ -31,12 +31,13 @@ print(rc.cluster_save_config(rc.get_primaries()))
 print(rc.cluster_save_config(rc.get_node(host=host, port=6378)))
 
 # READONLY examples
-rc_readonly = Redis(startup_nodes=startup_nodes, read_from_replicas=True)
+rc_readonly = Redis(startup_nodes=startup_nodes, read_from_replicas=True,
+                    debug=True)
+rc_readonly.set('bar', 'foo')
 for i in range(0, 4):
     # Assigning the read command to the slot's servers in a Round-Robin manner
-    print(rc_readonly.get('zzz'))
+    print(rc_readonly.get('bar'))
 # set command would be directed only to the slot's primary node
-rc_readonly.set('bar', 'foo2')
 # reset READONLY flag
 print(rc_readonly.readwrite())
 # now the get command would be directed only to the slot's primary node

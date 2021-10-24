@@ -355,6 +355,7 @@ class RedisCluster(ClusterCommands, object):
             reinitialize_steps=10,
             read_from_replicas=False,
             url=None,
+            debug=False,
             **kwargs
     ):
         """
@@ -381,6 +382,10 @@ class RedisCluster(ClusterCommands, object):
             When set to true, read commands will be assigned between the
             primary and its replications in a Round-Robin manner.
         :cluster_error_retry_attempts: 'int'
+            Retry command execution attempts when encountering ClusterDownError
+            or ConnectionError
+        :debug:
+            Add prints to debug the RedisCluster client
 
         :**kwargs:
             Extra arguments that will be sent into Redis instance when created
@@ -446,6 +451,7 @@ class RedisCluster(ClusterCommands, object):
         self.cluster_error_retry_attempts = cluster_error_retry_attempts
         self.command_flags = self.__class__.COMMAND_FLAGS.copy()
         self.node_flags = self.__class__.NODE_FLAGS.copy()
+        self.debug_mode = debug
         self.read_from_replicas = read_from_replicas
         self.reinitialize_counter = 0
         self.reinitialize_steps = reinitialize_steps
@@ -777,6 +783,9 @@ class RedisCluster(ClusterCommands, object):
                                            command in READ_COMMANDS)
                     moved = False
 
+                if self.debug_mode:
+                    print("Executing command {0} on target node {1}".
+                          format(command, target_node.name))
                 redis_node = self.get_redis_connection(target_node)
                 connection = get_connection(redis_node, *args, **kwargs)
                 if asking:
@@ -930,14 +939,19 @@ class LoadBalancer:
     Round-Robin Load Balancing
     """
 
-    def __init__(self, bucket_size, start_index=0):
-        self.slot_idx_list = [start_index] * bucket_size
+    def __init__(self, start_index=0):
+        self.primary_to_idx = {}
+        self.start_index = start_index
 
-    def get_server_index(self, slot, list_size):
-        server_index = self.slot_idx_list[slot]
+    def get_server_index(self, primary, list_size):
+        server_index = self.primary_to_idx.setdefault(primary,
+                                                      self.start_index)
         # Update the index
-        self.slot_idx_list[slot] = (server_index + 1) % list_size
+        self.primary_to_idx[primary] = (server_index + 1) % list_size
         return server_index
+
+    def reset(self):
+        self.primary_to_idx.clear()
 
 
 class NodesManager:
@@ -953,7 +967,7 @@ class NodesManager:
         self._skip_full_coverage_check = skip_full_coverage_check
         self._moved_exception = None
         self.connection_kwargs = kwargs
-        self.read_load_balancer = None
+        self.read_load_balancer = LoadBalancer()
         if lock is None:
             lock = threading.Lock()
         self._lock = lock
@@ -1017,10 +1031,20 @@ class NodesManager:
             with self._lock:
                 if self._moved_exception:
                     self._update_moved_slots()
+
+        if self.slots_cache.get(slot) is None or \
+                len(self.slots_cache[slot]) == 0:
+            raise SlotNotCoveredError(
+                'Slot "{0}" not covered by the cluster. '
+                '"require_full_coverage={1}"'.format(
+                    slot, self._require_full_coverage)
+            )
+
         if read_from_replicas:
             # get the server index in a Round-Robin manner
-            node_idx = self.get_read_load_balancer().get_server_index(
-                slot, len(self.slots_cache[slot]))
+            primary_name = self.slots_cache[slot][0].name
+            node_idx = self.read_load_balancer.get_server_index(
+                primary_name, len(self.slots_cache[slot]))
         elif (
                 server_type is None
                 or server_type == PRIMARY
@@ -1033,15 +1057,8 @@ class NodesManager:
             # randomly choose one of the replicas
             node_idx = random.randint(
                 1, len(self.slots_cache[slot]) - 1)
-        try:
-            target_node = self.slots_cache[slot][node_idx]
-        except KeyError:
-            raise SlotNotCoveredError(
-                'Slot "{0}" not covered by the cluster. '
-                '"require_full_coverage={1}"'.format(
-                    slot, self._require_full_coverage)
-            )
-        return target_node
+
+        return self.slots_cache[slot][node_idx]
 
     def get_nodes_by_server_type(self, server_type):
         return [
@@ -1049,14 +1066,6 @@ class NodesManager:
             for node in self.nodes_cache.values()
             if node.server_type == server_type
         ]
-
-    def get_read_load_balancer(self):
-        if self.read_load_balancer is None:
-            with self._lock:
-                if self.read_load_balancer is None:
-                    self.read_load_balancer = LoadBalancer(
-                        REDIS_CLUSTER_HASH_SLOTS)
-        return self.read_load_balancer
 
     def populate_startup_nodes(self, nodes):
         """
@@ -1132,6 +1141,7 @@ class NodesManager:
         :startup_nodes:
             Responsible for discovering other nodes in the cluster
         """
+        self.reset()
         tmp_nodes_cache = {}
         tmp_slots = {}
         disagreements = []
@@ -1282,6 +1292,10 @@ class NodesManager:
             if node.redis_connection:
                 node.redis_connection.close()
 
+    def reset(self):
+        if self.read_load_balancer is not None:
+            self.read_load_balancer.reset()
+
 
 class ClusterPubSub(PubSub):
     """
@@ -1373,10 +1387,11 @@ class ClusterPipeline(RedisCluster):
     def __init__(self, nodes_manager, result_callbacks=None,
                  cluster_response_callbacks=None, startup_nodes=None,
                  read_from_replicas=False, cluster_error_retry_attempts=3,
-                 **kwargs):
+                 debug=False, **kwargs):
         """
         """
         self.command_stack = []
+        self.debug_mode=debug
         self.nodes_manager = nodes_manager
         self.refresh_table_asap = False
         self.result_callbacks = (result_callbacks or
