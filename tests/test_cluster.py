@@ -49,7 +49,7 @@ def slowlog(request, r):
     """
     # Save old values
     current_config = r.config_get(
-                        target_nodes=r.get_primaries()[0])
+        target_nodes=r.get_primaries()[0])
     old_slower_than_value = current_config['slowlog-log-slower-than']
     old_max_legnth_value = current_config['slowlog-max-len']
 
@@ -194,7 +194,7 @@ class TestRedisClusterObj:
                          ClusterNode(default_host, port_2)]
         cluster = get_mocked_redis_client(startup_nodes=startup_nodes)
         assert cluster.get_node(host=default_host, port=port_1) is not None \
-               and cluster.get_node(host=default_host, port=port_2) is not None
+            and cluster.get_node(host=default_host, port=port_2) is not None
 
     def test_empty_startup_nodes(self):
         """
@@ -395,7 +395,7 @@ class TestRedisClusterObj:
                             RedisCluster, request, flushdb=False)
                         assert len(rc.get_nodes()) == 1
                         assert rc.get_node(node_name=node_7006.name) is not \
-                               None
+                            None
 
                         rc.get('foo')
 
@@ -403,7 +403,7 @@ class TestRedisClusterObj:
                         # one failed and one successful call
                         assert len(rc.get_nodes()) == 1
                         assert rc.get_node(node_name=node_7007.name) is not \
-                               None
+                            None
                         assert rc.get_node(node_name=node_7006.name) is None
                         assert parse_response.failed_calls == 1
                         assert parse_response.successful_calls == 1
@@ -473,7 +473,7 @@ class TestRedisClusterObj:
 
     def test_get_node_name(self):
         assert get_node_name(default_host, default_port) == \
-               "{0}:{1}".format(default_host, default_port)
+            "{0}:{1}".format(default_host, default_port)
 
     def test_all_nodes(self, r):
         """
@@ -516,7 +516,7 @@ class TestRedisClusterObj:
             with pytest.raises(ClusterDownError):
                 rc.get("bar")
                 assert execute_command.failed_calls == \
-                       rc.cluster_error_retry_attempts
+                    rc.cluster_error_retry_attempts
 
     @pytest.mark.filterwarnings("ignore:ConnectionError")
     def test_connection_error_overreaches_retry_attempts(self):
@@ -537,7 +537,7 @@ class TestRedisClusterObj:
             with pytest.raises(ConnectionError):
                 rc.get("bar")
                 assert execute_command.failed_calls == \
-                       rc.cluster_error_retry_attempts
+                    rc.cluster_error_retry_attempts
 
     def test_user_on_connect_function(self, request):
         """
@@ -557,7 +557,7 @@ class TestRedisClusterObj:
 class TestClusterRedisCommands:
     def test_case_insensitive_command_names(self, r):
         assert r.cluster_response_callbacks['cluster addslots'] == \
-               r.cluster_response_callbacks['CLUSTER ADDSLOTS']
+            r.cluster_response_callbacks['CLUSTER ADDSLOTS']
 
     def test_get_and_set(self, r):
         # get and set can't be tested independently of each other
@@ -659,7 +659,7 @@ class TestClusterRedisCommands:
             p.subscribe(channel)
             # Assert that each node returns that only one client is subscribed
             assert node.redis_connection.pubsub_numsub(channel) == \
-                   [(b_channel, 1)]
+                [(b_channel, 1)]
         # Assert that the cluster's pubsub_numsub function returns ALL clients
         # subscribed to this channel in the entire cluster
         assert r.pubsub_numsub(channel) == [(b_channel, len(nodes))]
@@ -685,7 +685,7 @@ class TestClusterRedisCommands:
         assert len(default_cluster_slots) == len(cluster_slots)
         assert cluster_slots.get((0, 8191)) is not None
         assert cluster_slots.get((0, 8191)).get('primary') == \
-               ('127.0.0.1', 7000)
+            ('127.0.0.1', 7000)
 
     def test_cluster_addslots(self, r):
         node = r.get_random_node()
@@ -768,7 +768,7 @@ class TestClusterRedisCommands:
         assert len(nodes) == 7
         assert nodes.get('172.17.0.7:7006') is not None
         assert nodes.get('172.17.0.7:7006').get('node_id') == \
-               "c8253bae761cb1ecb2b61857d85dfe455a0fec8b"
+            "c8253bae761cb1ecb2b61857d85dfe455a0fec8b"
 
     def test_cluster_replicate(self, r):
         node = r.get_random_node()
@@ -845,7 +845,7 @@ class TestClusterRedisCommands:
         assert replicas.get('127.0.0.1:6377') is not None
         assert replicas.get('127.0.0.1:6378') is not None
         assert replicas.get('127.0.0.1:6378').get('node_id') == \
-               'r4xfga22229cf3c652b6fca0d09ff69f3e0d4d'
+            'r4xfga22229cf3c652b6fca0d09ff69f3e0d4d'
 
     def test_readonly(self):
         r = get_mocked_redis_client(host=default_host, port=default_port)
@@ -1067,7 +1067,7 @@ class TestClusterRedisCommands:
 class TestNodesManager:
     def test_load_balancer(self, r):
         n_manager = r.nodes_manager
-        lb = n_manager.get_read_load_balancer()
+        lb = n_manager.read_load_balancer
         slot_1 = 1257
         slot_2 = 8975
         node_1 = ClusterNode(default_host, 6379, PRIMARY)
@@ -1079,17 +1079,23 @@ class TestNodesManager:
             slot_1: [node_1, node_2, node_3],
             slot_2: [node_4, node_5]
         }
+        primary1_name = n_manager.slots_cache[slot_1][0].name
+        primary2_name = n_manager.slots_cache[slot_2][0].name
         list1_size = len(n_manager.slots_cache[slot_1])
         list2_size = len(n_manager.slots_cache[slot_2])
         # slot 1
-        assert lb.get_server_index(slot_1, list1_size) == 0
-        assert lb.get_server_index(slot_1, list1_size) == 1
-        assert lb.get_server_index(slot_1, list1_size) == 2
-        assert lb.get_server_index(slot_1, list1_size) == 0
+        assert lb.get_server_index(primary1_name, list1_size) == 0
+        assert lb.get_server_index(primary1_name, list1_size) == 1
+        assert lb.get_server_index(primary1_name, list1_size) == 2
+        assert lb.get_server_index(primary1_name, list1_size) == 0
         # slot 2
-        assert lb.get_server_index(slot_2, list2_size) == 0
-        assert lb.get_server_index(slot_2, list2_size) == 1
-        assert lb.get_server_index(slot_2, list2_size) == 0
+        assert lb.get_server_index(primary2_name, list2_size) == 0
+        assert lb.get_server_index(primary2_name, list2_size) == 1
+        assert lb.get_server_index(primary2_name, list2_size) == 0
+
+        lb.reset()
+        assert lb.get_server_index(primary1_name, list1_size) == 0
+        assert lb.get_server_index(primary2_name, list2_size) == 0
 
     def test_init_slots_cache_not_all_slots_covered(self):
         """
