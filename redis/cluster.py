@@ -1391,7 +1391,7 @@ class ClusterPipeline(RedisCluster):
         """
         """
         self.command_stack = []
-        self.debug_mode=debug
+        self.debug_mode = debug
         self.nodes_manager = nodes_manager
         self.refresh_table_asap = False
         self.result_callbacks = (result_callbacks or
