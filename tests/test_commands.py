@@ -1113,6 +1113,8 @@ class TestRedisCommands:
         assert r['a'] == b'1'
         assert 0 < r.pttl('a') <= 10000
         assert 0 < r.ttl('a') <= 10
+        with pytest.raises(exceptions.DataError):
+            assert r.set('a', '1', px=10.0)
 
     @skip_if_server_version_lt('2.6.0')
     def test_set_px_timedelta(self, r):
@@ -1125,6 +1127,8 @@ class TestRedisCommands:
     def test_set_ex(self, r):
         assert r.set('a', '1', ex=10)
         assert 0 < r.ttl('a') <= 10
+        with pytest.raises(exceptions.DataError):
+            assert r.set('a', '1', ex=10.0)
 
     @skip_if_server_version_lt('2.6.0')
     def test_set_ex_timedelta(self, r):
@@ -1929,12 +1933,13 @@ class TestRedisCommands:
         assert r.zrangestore('b', 'a', 1, 2, desc=True)
         assert r.zrange('b', 0, -1) == [b'a1', b'a2']
         # by score
-        assert r.zrangestore('b', 'a', 1, 2, byscore=True,
-                             offset=0, num=1)
-        assert r.zrange('b', 0, -1) == [b'a1']
+        assert r.zrangestore('b', 'a', 2, 1, byscore=True,
+                             offset=0, num=1, desc=True)
+        assert r.zrange('b', 0, -1) == [b'a2']
         # by lex
-        assert r.zrange('a', '[a2', '(a3', bylex=True) == \
-               [b'a2']
+        assert r.zrangestore('b', 'a', '[a2', '(a3', bylex=True,
+                             offset=0, num=1)
+        assert r.zrange('b', 0, -1) == [b'a2']
 
     @skip_if_server_version_lt('2.8.9')
     def test_zrangebylex(self, r):
@@ -2556,7 +2561,7 @@ class TestRedisCommands:
         assert r.geosearch('barcelona', member='place3', radius=100,
                            unit='km', count=2) == [b'place3', b'\x80place2']
         assert r.geosearch('barcelona', member='place3', radius=100,
-                           unit='km', count=1, any=1)[0] \
+                           unit='km', count=1, any=True)[0] \
                in [b'place1', b'place3', b'\x80place2']
 
     @skip_unless_arch_bits(64)
@@ -2661,7 +2666,8 @@ class TestRedisCommands:
 
         # use any without count
         with pytest.raises(exceptions.DataError):
-            assert r.geosearch('barcelona', member='place3', radius=100, any=1)
+            assert r.geosearch('barcelona', member='place3',
+                               radius=100, any=True)
 
     @skip_if_server_version_lt('6.2.0')
     def test_geosearchstore(self, r):
@@ -3225,6 +3231,14 @@ class TestRedisCommands:
         assert response[0]['consumer'] == consumer1.encode()
         assert response[1]['message_id'] == m2
         assert response[1]['consumer'] == consumer2.encode()
+
+        # test with consumer name
+        response = r.xpending_range(stream, group,
+                                    min='-', max='+', count=5,
+                                    consumername=consumer1)
+        assert len(response) == 1
+        assert response[0]['message_id'] == m1
+        assert response[0]['consumer'] == consumer1.encode()
 
     @skip_if_server_version_lt('6.2.0')
     def test_xpending_range_idle(self, r):
