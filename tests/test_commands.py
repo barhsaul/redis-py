@@ -11,7 +11,7 @@ from redis import exceptions
 from redis.commands import CommandsParser
 from .conftest import (
     _get_client,
-        skip_if_cluster_mode,
+    skip_if_cluster_mode,
     skip_if_server_version_gte,
     skip_if_server_version_lt,
     skip_unless_arch_bits,

@@ -1,7 +1,8 @@
 import pytest
 
 import redis
-from .conftest import wait_for_command, skip_if_server_version_lt
+from .conftest import wait_for_command, skip_if_server_version_lt, \
+    skip_if_cluster_mode
 
 
 class TestPipeline:

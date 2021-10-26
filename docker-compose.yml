@@ -1,0 +1,100 @@
+version: "3.8"
+
+services:
+  master:
+    container_name: redis-master
+    build: docker/master
+    ports:
+      - "6379:6379"
+
+  replica:
+    container_name: redis-replica
+    build: docker/replica
+    depends_on:
+      - "master"
+    ports:
+      - "6380:6380"
+
+  sentinel_1:
+    container_name: sentinel-1
+    build: docker/sentinel_1
+    depends_on:
+      - "replica"
+    ports:
+      - "26379:26379"
+
+  sentinel_2:
+    container_name: sentinel-2
+    build: docker/sentinel_2
+    depends_on:
+      - "replica"
+    ports:
+      - "26380:26380"
+
+  sentinel_3:
+    container_name: sentinel-3
+    build: docker/sentinel_3
+    depends_on:
+      - "replica"
+    ports:
+      - "26381:26381"
+
+  cluster_master_1:
+    container_name: cluster-master-1
+    build: docker/cluster/master_1
+    ports:
+      - "16379:16379"
+
+  cluster_master_2:
+    container_name: cluster-master-2
+    build: docker/cluster/master_2
+    ports:
+      - "16380:16380"
+
+  cluster_replica_1:
+    container_name: cluster-replica-1
+    build: docker/cluster/replica_1
+    depends_on:
+      - "cluster_master_1"
+    ports:
+      - "16381:16381"
+    environment:
+      CLUSTER_MASTER_HOST: cluster_master_1
+
+  cluster_replica_2:
+    container_name: cluster-replica-2
+    build: docker/cluster/replica_2
+    depends_on:
+      - "cluster_master_2"
+    ports:
+      - "16382:16382"
+    environment:
+      CLUSTER_MASTER_HOST: cluster_master_2
+
+  test:
+    container_name: test
+    build: .
+    depends_on:
+      - "cluster_replica_2"
+    environment:
+      REDIS_MASTER_HOST: master
+      REDIS_MASTER_PORT: 6379
+      DB: 9
+      CLUSTER_MASTER_HOST: cluster_master_1
+      CLUSTER_MASTER_PORT: 16379
+      CLUSTER_DB: 0
+      CI:
+      CI_BUILD_ID:
+      CI_BUILD_URL:
+      CI_JOB_ID:
+      CODECOV_ENV:
+      CODECOV_SLUG:
+      CODECOV_TOKEN:
+      CODECOV_URL:
+      SHIPPABLE:
+      GITHUB_ACTIONS:
+      VCS_BRANCH_NAME:
+      VCS_COMMIT_ID:
+      VCS_PULL_REQUEST:
+      VCS_SLUG:
+      VCS_TAG:

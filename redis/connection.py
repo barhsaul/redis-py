@@ -28,7 +28,7 @@ from redis.exceptions import (
     TimeoutError,
     ModuleError,
 )
-from redis.utils import HIREDIS_AVAILABLE, str_if_bytes, dict_merge
+from redis.utils import HIREDIS_AVAILABLE, str_if_bytes
 from redis.backoff import NoBackoff
 from redis.retry import Retry
 

@@ -3,6 +3,7 @@ import time
 import warnings
 import hashlib
 
+from .helpers import list_or_args
 from redis.exceptions import (
     ConnectionError,
     DataError,
@@ -15,8 +16,6 @@ from redis.crc import key_slot
 
 
 class CommandsParser:
-    DEFAULT_KEY_POS = 1
-
     def __init__(self, redis_connection):
         self.initialized = False
         self.commands = {}
@@ -112,21 +111,13 @@ class CommandsParser:
         return keys
 
 
-def list_or_args(keys, args):
-    # returns a single new list combining keys and args
-    try:
-        iter(keys)
-        # a string or bytes instance can be iterated, but indicates
-        # keys wasn't passed as a list
-        if isinstance(keys, (bytes, str)):
-            keys = [keys]
-        else:
-            keys = list(keys)
-    except TypeError:
-        keys = [keys]
-    if args:
-        keys.extend(args)
-    return keys
+class CoreCommands:
+    """
+    A class containing all of the implemented redis commands. This class is
+    to be used as a mixin.
+    """
+
+    # SERVER INFORMATION
 
 
 class AclCommands:
@@ -633,6 +624,23 @@ class ManagementCommands:
     def ping(self):
         "Ping the Redis server"
         return self.execute_command('PING')
+
+    def quit(self):
+        """
+        Ask the server to close the connection.
+        https://redis.io/commands/quit
+        """
+        return self.execute_command('QUIT')
+
+    def replicaof(self, *args):
+        """
+        Update the replication settings of a redis replica, on the fly.
+        Examples of valid arguments include:
+            NO ONE (set no replication)
+            host port (set to the host and port of a redis server)
+        see: https://redis.io/commands/replicaof
+        """
+        return self.execute_command('REPLICAOF', *args)
 
     def save(self):
         """
@@ -3115,7 +3123,6 @@ class SentinalCommands:
         return self.execute_command('SENTINEL SLAVES', service_name)
 
 
-
 class ClusterMultiKeyCommands:
     """
     A class containing commands that handle more than one key
@@ -3159,7 +3166,7 @@ class ClusterMultiKeyCommands:
         all_results = {}
         for slot_keys in slots_to_keys.values():
             slot_values = self.execute_command(
-                               'MGET', *slot_keys, **options)
+                'MGET', *slot_keys, **options)
 
             slot_results = dict(zip(slot_keys, slot_values))
             all_results.update(slot_results)
