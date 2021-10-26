@@ -41,6 +41,7 @@ def tests(c):
     with and without hiredis.
     """
     run("tox -e plain -e hiredis")
+    # run("tox -e plain -e hiredis -- --redis-url=redis://localhost:16380/0")
 
 
 @task
