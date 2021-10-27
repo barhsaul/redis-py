@@ -5,7 +5,6 @@ import time
 import threading
 import warnings
 import sys
-import os
 
 from collections import OrderedDict
 from redis.client import CaseInsensitiveDict, Redis, PubSub
@@ -675,11 +674,14 @@ class RedisCluster(ClusterCommands, object):
             # single key command
             return self.keyslot(keys[0])
 
-    def is_nodes_flag(self, target_nodes):
+    def reinitialize_caches(self):
+        self.nodes_manager.initialize()
+
+    def _is_nodes_flag(self, target_nodes):
         return isinstance(target_nodes, str) \
             and target_nodes in self.node_flags
 
-    def parse_target_nodes(self, target_nodes):
+    def _parse_target_nodes(self, target_nodes):
         if isinstance(target_nodes, list):
             nodes = target_nodes
         elif isinstance(target_nodes, ClusterNode):
@@ -717,8 +719,8 @@ class RedisCluster(ClusterCommands, object):
         """
         target_nodes_specified = False
         target_nodes = kwargs.pop("target_nodes", None)
-        if target_nodes is not None and not self.is_nodes_flag(target_nodes):
-            target_nodes = self.parse_target_nodes(target_nodes)
+        if target_nodes is not None and not self._is_nodes_flag(target_nodes):
+            target_nodes = self._parse_target_nodes(target_nodes)
             target_nodes_specified = True
         # If ClusterDownError/ConnectionError were thrown, the nodes
         # and slots cache were reinitialized. We will retry executing the
@@ -785,8 +787,9 @@ class RedisCluster(ClusterCommands, object):
                     moved = False
 
                 if self.debug_mode:
-                    print("Executing command {0} on target node {1}".
-                          format(command, target_node.name))
+                    print("Executing command {0} on target node: {1} {2}".
+                          format(command, target_node.server_type,
+                                 target_node.name))
                 redis_node = self.get_redis_connection(target_node)
                 connection = get_connection(redis_node, *args, **kwargs)
                 if asking:

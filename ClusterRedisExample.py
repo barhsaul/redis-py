@@ -2,10 +2,10 @@ from redis import RedisCluster as Redis
 from redis.cluster import ClusterNode
 
 host = 'localhost'
-startup_nodes = [ClusterNode(host, 6378), ClusterNode(host, 6379)]
+startup_nodes = [ClusterNode(host, 16379), ClusterNode(host, 16380)]
 
 # from_url examples
-rc_url = Redis.from_url("redis://localhost:6379/0")
+rc_url = Redis.from_url("redis://localhost:16379/0")
 print(rc_url.cluster_slots())
 print(rc_url.ping(Redis.PRIMARIES))
 print(rc_url.ping(Redis.REPLICAS))
@@ -28,7 +28,7 @@ rc = Redis(startup_nodes=startup_nodes, decode_responses=True)
 print(rc.get('{000}'))
 print(rc.keys())
 print(rc.cluster_save_config(rc.get_primaries()))
-print(rc.cluster_save_config(rc.get_node(host=host, port=6378)))
+print(rc.cluster_save_config(rc.get_node(host=host, port=16379)))
 
 # READONLY examples
 rc_readonly = Redis(startup_nodes=startup_nodes, read_from_replicas=True,
@@ -40,5 +40,6 @@ for i in range(0, 4):
 # set command would be directed only to the slot's primary node
 # reset READONLY flag
 print(rc_readonly.readwrite())
-# now the get command would be directed only to the slot's primary node
-print(rc_readonly.get('bar'))
+for i in range(0, 4):
+    # now the get command would be directed only to the slot's primary node
+    print(rc_readonly.get('bar'))

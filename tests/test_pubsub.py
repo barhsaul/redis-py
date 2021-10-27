@@ -174,6 +174,7 @@ class TestPubSubSubscribeUnsubscribe:
         kwargs = make_subscribe_test_data(r.pubsub(), 'channel')
         self._test_subscribed_property(**kwargs)
 
+    @skip_if_cluster_mode()
     def test_subscribe_property_with_patterns(self, r):
         kwargs = make_subscribe_test_data(r.pubsub(), 'pattern')
         self._test_subscribed_property(**kwargs)
@@ -217,6 +218,7 @@ class TestPubSubSubscribeUnsubscribe:
         kwargs = make_subscribe_test_data(r.pubsub(), 'channel')
         self._test_sub_unsub_resub(**kwargs)
 
+    @skip_if_cluster_mode()
     def test_sub_unsub_resub_patterns(self, r):
         kwargs = make_subscribe_test_data(r.pubsub(), 'pattern')
         self._test_sub_unsub_resub(**kwargs)
@@ -304,6 +306,7 @@ class TestPubSubMessages:
         assert wait_for_message(p) is None
         assert self.message == make_message('message', 'foo', 'test message')
 
+    @skip_if_cluster_mode()
     def test_pattern_message_handler(self, r):
         p = r.pubsub(ignore_subscribe_messages=True)
         p.psubscribe(**{'f*': self.message_handler})
@@ -401,6 +404,7 @@ class TestPubSubAutoDecoding:
                                                         self.channel,
                                                         self.data)
 
+    @skip_if_cluster_mode()
     def test_pattern_publish(self, r):
         p = r.pubsub()
         p.psubscribe(self.pattern)

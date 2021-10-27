@@ -1097,6 +1097,65 @@ sent separately to the slot's owner.
     [b'value1', b'value2', b'value3']
 ```
 
+**Cluster PubSub:**
+
+When a ClusterPubSub instance is created without specifying a node, a single
+node will be transparently chosen for the pubsub connection on the
+first command execution. The node will be determined by:
+ 1. Hashing the channel name in the request to find its keyslot
+ 2. Selecting a node that handles the keyslot: If read_from_replicas is
+    set to true, a replica can be selected.
+    
+*Known limitations with pubsub:*
+
+Pattern subscribe and publish do not work properly because if we hash a pattern 
+like fo* we will get a keyslot for that string but there is a endless   
+possibilities of channel names based on that pattern that we can’t know in 
+advance. This feature is not limited but the commands is not recommended to use 
+right now. 
+See [redis-py-cluster documentaion](https://redis-py-cluster.readthedocs.io/en/stable/pubsub.html) 
+ for more.
+
+``` pycon
+    >>> p1 = rc.pubsub()
+    # p1 connection will be set to the node that holds 'foo' keyslot
+    >>> p1.subscribe('foo')
+    # p2 connection will be set to node 'localhost:6379'
+    >>> p2 = rc.pubsub(rc.get_node('localhost', 6379))
+```
+
+**Read Only Mode**
+
+By default, Redis Cluster always returns MOVE redirection response on accessing 
+a replica node. You can overcome this limitation and scale read commands with 
+READONLY mode. 
+
+To enable READONLY mode pass read_from_replicas=True to RedisCluster 
+constructor. When set to true, read commands will be assigned between the
+primary and its replications in a Round-Robin manner. 
+
+You could also enable READONLY mode in runtime by running readonly() method,  
+or disable it with readwrite().
+
+``` pycon
+    >>> from cluster import RedisCluster as Redis
+    # Use 'debug' mode to print the node that the command is executed on
+    >>> rc_readonly = Redis(startup_nodes=startup_nodes, 
+                    read_from_replicas=True, debug=True)
+    >>> rc_readonly.set('{foo}1', 'bar1')
+    >>> for i in range(0, 4):
+            # Assigns read command to the slot's hosts in a Round-Robin manner
+    >>>     rc_readonly.get('{foo}1')
+    # set command would be directed only to the slot's primary node
+    >>> rc_readonly.set('{foo}2', 'bar2')
+    # reset READONLY flag
+    >>> rc_readonly.readwrite()
+    # now the get command would be directed only to the slot's primary node
+    >>> rc_readonly.get('{foo}1')
+```
+
+
+
 See [Redis Cluster tutorial](https://redis.io/topics/cluster-tutorial) and
 [Redis Cluster specifications](https://redis.io/topics/cluster-spec)
 to learn more about Redis Cluster.
