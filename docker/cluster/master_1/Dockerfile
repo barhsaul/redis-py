@@ -1,9 +1,9 @@
-FROM redis-py-base:latest
+FROM redis:6.2.6-buster
 
-COPY redis.conf /usr/local/etc/redis/redis.conf
-COPY nodes.conf /usr/local/etc/redis/nodes.conf
+COPY redis.conf /redis.conf
+COPY create_cluster.sh /create_cluster.sh
+RUN chmod +x /create_cluster.sh
 
-EXPOSE 16379
+EXPOSE 16379 16380 16381 16382 16383 16384
 
-RUN chmod 006 /usr/local/etc/redis/nodes.conf
-CMD [ "redis-server", "/usr/local/etc/redis/redis.conf" ]
+CMD [ "/create_cluster.sh" ]

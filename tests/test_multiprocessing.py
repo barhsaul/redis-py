@@ -6,7 +6,7 @@ import redis
 from redis.connection import Connection, ConnectionPool
 from redis.exceptions import ConnectionError
 
-from .conftest import _get_client
+from .conftest import _get_client, skip_if_server_version_lt
 
 
 @contextlib.contextmanager
@@ -17,7 +17,7 @@ def exit_callback(callback, *args):
         callback(*args)
 
 
-# @skip_if_cluster_mode()
+@skip_if_server_version_lt("7.0.0")
 class TestMultiprocessing:
     # Test connection sharing between forks.
     # See issue #1085 for details.

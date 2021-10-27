@@ -5,6 +5,7 @@ import time
 import threading
 import warnings
 import sys
+import os
 
 from collections import OrderedDict
 from redis.client import CaseInsensitiveDict, Redis, PubSub
@@ -912,7 +913,7 @@ class RedisCluster(ClusterCommands, object):
 
 class ClusterNode(object):
     def __init__(self, host, port, server_type=None, redis_connection=None):
-        if host == "localhost":
+        if host == 'localhost':
             host = socket.gethostbyname(host)
 
         self.host = host

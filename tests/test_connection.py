@@ -18,12 +18,14 @@ def test_invalid_response(r):
     assert str(cm.value) == 'Protocol Error: %r' % raw
 
 
+@skip_if_cluster_mode()
 @skip_if_server_version_lt('4.0.0')
 def test_loaded_modules(r, modclient):
     assert r.loaded_modules == []
-    assert 'rejson' in modclient.loaded_modules
+    assert 'rejson' in modclient.loaded_modules.keys()
 
 
+@skip_if_cluster_mode()
 @skip_if_server_version_lt('4.0.0')
 def test_loading_external_modules(r, modclient):
     def inner():
