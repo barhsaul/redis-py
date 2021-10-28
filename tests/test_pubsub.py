@@ -120,6 +120,7 @@ class TestPubSubSubscribeUnsubscribe:
         kwargs = make_subscribe_test_data(r.pubsub(), 'channel')
         self._test_resubscribe_on_reconnection(**kwargs)
 
+    @skip_if_cluster_mode()
     def test_resubscribe_to_patterns_on_reconnection(self, r):
         kwargs = make_subscribe_test_data(r.pubsub(), 'pattern')
         self._test_resubscribe_on_reconnection(**kwargs)
