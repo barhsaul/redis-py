@@ -9,7 +9,115 @@ from redis.exceptions import (
     DataError,
     NoScriptError,
     RedisError,
+    ResponseError
 )
+from redis.utils import str_if_bytes
+from redis.crc import key_slot
+
+
+class CommandsParser:
+    def __init__(self, redis_connection):
+        self.initialized = False
+        self.commands = {}
+        self.initialize(redis_connection)
+
+    def initialize(self, r):
+        self.commands = r.execute_command("COMMAND")
+
+    # As soon as this PR is merged into Redis, we should reimplement
+    # our logic to use COMMAND INFO changes to determine the key positions
+    # https://github.com/redis/redis/pull/8324
+    def get_keys(self, redis_conn, *args):
+        """
+        Get the keys from the passed command
+        """
+        if len(args) < 2:
+            # The command has no keys in it
+            return None
+
+        cmd_name = args[0].lower()
+        cmd_name_split = cmd_name.split()
+        if len(cmd_name_split) > 1:
+            # we need to take only the main command, e.g. 'memory' for
+            # 'memory usage'
+            cmd_name = cmd_name_split[0]
+        if cmd_name not in self.commands:
+            # We'll try to reinitialize the commands cache, if the engine
+            # version has changed, the commands may not be current
+            self.initialize(redis_conn)
+            if cmd_name not in self.commands:
+                raise RedisError("{0} command doesn't exist in Redis commands".
+                                 format(cmd_name.upper()))
+
+        command = self.commands.get(cmd_name)
+        if 'movablekeys' in command['flags']:
+            keys = self.get_moveable_keys(redis_conn, *args)
+        elif 'pubsub' in command['flags']:
+            keys = self.get_pubsub_keys(*args)
+        else:
+            if command['step_count'] == 0 and command['first_key_pos'] == 0 \
+                    and command['last_key_pos'] == 0:
+                # The command doesn't have keys in it
+                return None
+            last_key_pos = command['last_key_pos']
+            if last_key_pos == -1:
+                last_key_pos = len(args) - 1
+            keys_pos = list(range(command['first_key_pos'], last_key_pos + 1,
+                                  command['step_count']))
+            keys = [args[pos] for pos in keys_pos]
+
+        return keys
+
+    def get_moveable_keys(self, redis_conn, *args):
+        try:
+            pieces = []
+            cmd_name = args[0]
+            for arg in cmd_name.split():
+                # The command name should be splitted into separate arguments,
+                # e.g. 'MEMORY USAGE' will be splitted into ['MEMORY', 'USAGE']
+                pieces.append(arg)
+            pieces += args[1:]
+            keys = redis_conn.execute_command('COMMAND GETKEYS', *pieces)
+        except ResponseError as e:
+            message = e.__str__()
+            if 'Invalid arguments' in message or \
+                    'The command has no key arguments' in message:
+                return None
+            else:
+                raise e
+        return keys
+
+    def get_pubsub_keys(self, *args):
+        """
+        Get the keys from pubsub command.
+        Although PubSub commands have predetermined key locations, they are not
+        supported in the 'COMMAND's output, so the key positions are hardcoded
+        in this method
+        """
+        if len(args) < 2:
+            # The command has no keys in it
+            return None
+        args = [str_if_bytes(arg) for arg in args]
+        command = args[0].upper()
+        if command in ['PUBLISH', 'PUBSUB CHANNELS']:
+            # format example:
+            # PUBLISH channel message
+            keys = [args[1]]
+        elif command in ['SUBSCRIBE', 'PSUBSCRIBE', 'UNSUBSCRIBE',
+                         'PUNSUBSCRIBE', 'PUBSUB NUMSUB']:
+            keys = list(args[1:])
+        else:
+            keys = None
+        return keys
+
+
+class CoreCommands:
+    """
+    A class containing all of the implemented redis commands. This class is
+    to be used as a mixin.
+    """
+
+    # SERVER INFORMATION
 
 
 class AclCommands:
@@ -25,26 +133,13 @@ class AclCommands:
         pieces = [category] if category else []
         return self.execute_command('ACL CAT', *pieces)
 
-    def acl_deluser(self, *username):
-        "Delete the ACL for the specified ``username``s"
-        return self.execute_command('ACL DELUSER', *username)
+    def acl_deluser(self, username):
+        "Delete the ACL for the specified ``username``"
+        return self.execute_command('ACL DELUSER', username)
 
-    def acl_genpass(self, bits=None):
-        """Generate a random password value.
-        If ``bits`` is supplied then use this number of bits, rounded to
-        the next multiple of 4.
-        See: https://redis.io/commands/acl-genpass
-        """
-        pieces = []
-        if bits is not None:
-            try:
-                b = int(bits)
-                if b < 0 or b > 4096:
-                    raise ValueError
-            except ValueError:
-                raise DataError('genpass optionally accepts a bits argument, '
-                                'between 0 and 4096.')
-        return self.execute_command('ACL GENPASS', *pieces)
+    def acl_genpass(self):
+        "Generate a random password value"
+        return self.execute_command('ACL GENPASS')
 
     def acl_getuser(self, username):
         """
@@ -53,12 +148,6 @@ class AclCommands:
         If ``username`` does not exist, return None
         """
         return self.execute_command('ACL GETUSER', username)
-
-    def acl_help(self):
-        """The ACL HELP command returns helpful text describing
-        the different subcommands.
-        """
-        return self.execute_command('ACL HELP')
 
     def acl_list(self):
         "Return a list of all ACLs on the server"
@@ -266,22 +355,19 @@ class ManagementCommands:
         "Tell the Redis server to rewrite the AOF file from data in memory."
         return self.execute_command('BGREWRITEAOF')
 
-    def bgsave(self, schedule=True):
+    def bgsave(self):
         """
         Tell the Redis server to save its data to disk.  Unlike save(),
         this method is asynchronous and returns immediately.
         """
-        pieces = []
-        if schedule:
-            pieces.append("SCHEDULE")
-        return self.execute_command('BGSAVE', *pieces)
+        return self.execute_command('BGSAVE')
 
     def client_kill(self, address):
         "Disconnects the client at ``address`` (ip:port)"
         return self.execute_command('CLIENT KILL', address)
 
     def client_kill_filter(self, _id=None, _type=None, addr=None,
-                           skipme=None, laddr=None, user=None):
+                           skipme=None, laddr=None):
         """
         Disconnects client(s) using a variety of filter options
         :param id: Kills a client by its unique ID field
@@ -289,17 +375,16 @@ class ManagementCommands:
         'master', 'slave' or 'pubsub'
         :param addr: Kills a client by its 'address:port'
         :param skipme: If True, then the client calling the command
+        :param laddr: Kills a cient by its 'local (bind)  address:port'
         will not get killed even if it is identified by one of the filter
         options. If skipme is not provided, the server defaults to skipme=True
-        :param laddr: Kills a client by its 'local (bind) address:port'
-        :param user: Kills a client for a specific user name
         """
         args = []
         if _type is not None:
             client_types = ('normal', 'master', 'slave', 'pubsub')
             if str(_type).lower() not in client_types:
                 raise DataError("CLIENT KILL type must be one of %r" % (
-                                client_types,))
+                    client_types,))
             args.extend((b'TYPE', _type))
         if skipme is not None:
             if not isinstance(skipme, bool):
@@ -314,8 +399,6 @@ class ManagementCommands:
             args.extend((b'ADDR', addr))
         if laddr is not None:
             args.extend((b'LADDR', laddr))
-        if user is not None:
-            args.extend((b'USER', user))
         if not args:
             raise DataError("CLIENT KILL <filter> <value> ... ... <filter> "
                             "<value> must specify at least one filter")
@@ -328,13 +411,12 @@ class ManagementCommands:
         """
         return self.execute_command('CLIENT INFO')
 
-    def client_list(self, _type=None, client_id=[]):
+    def client_list(self, _type=None, client_id=None):
         """
         Returns a list of currently connected clients.
         If type of client specified, only that type will be returned.
         :param _type: optional. one of the client types (normal, master,
          replica, pubsub)
-        :param client_id: optional. a list of client ids
         """
         "Returns a list of currently connected clients"
         args = []
@@ -342,58 +424,21 @@ class ManagementCommands:
             client_types = ('normal', 'master', 'replica', 'pubsub')
             if str(_type).lower() not in client_types:
                 raise DataError("CLIENT LIST _type must be one of %r" % (
-                                client_types,))
+                    client_types,))
             args.append(b'TYPE')
             args.append(_type)
-        if not isinstance(client_id, list):
-            raise DataError("client_id must be a list")
-        if client_id != []:
+        if client_id is not None:
             args.append(b"ID")
-            args.append(' '.join(client_id))
+            args.append(client_id)
         return self.execute_command('CLIENT LIST', *args)
 
     def client_getname(self):
-        """Returns the current connection name"""
+        "Returns the current connection name"
         return self.execute_command('CLIENT GETNAME')
 
-    def client_getredir(self):
-        """Returns the ID (an integer) of the client to whom we are
-        redirecting tracking notifications.
-
-        see: https://redis.io/commands/client-getredir
-        """
-        return self.execute_command('CLIENT GETREDIR')
-
-    def client_reply(self, reply):
-        """Enable and disable redis server replies.
-        ``reply`` Must be ON OFF or SKIP,
-            ON - The default most with server replies to commands
-            OFF - Disable server responses to commands
-            SKIP - Skip the response of the immediately following command.
-
-        Note: When setting OFF or SKIP replies, you will need a client object
-        with a timeout specified in seconds, and will need to catch the
-        TimeoutError.
-              The test_client_reply unit test illustrates this, and
-              conftest.py has a client with a timeout.
-        See https://redis.io/commands/client-reply
-        """
-        replies = ['ON', 'OFF', 'SKIP']
-        if reply not in replies:
-            raise DataError('CLIENT REPLY must be one of %r' % replies)
-        return self.execute_command("CLIENT REPLY", reply)
-
     def client_id(self):
-        """Returns the current connection id"""
+        "Returns the current connection id"
         return self.execute_command('CLIENT ID')
-
-    def client_trackinginfo(self):
-        """
-        Returns the information about the current client connection's
-        use of the server assisted client side cache.
-        See https://redis.io/commands/client-trackinginfo
-        """
-        return self.execute_command('CLIENT TRACKINGINFO')
 
     def client_setname(self, name):
         "Sets the current connection name"
@@ -426,28 +471,16 @@ class ManagementCommands:
         """
         return self.execute_command('CLIENT UNPAUSE')
 
-    def command_info(self):
-        raise NotImplementedError(
-            "COMMAND INFO is intentionally not implemented in the client."
-        )
-
-    def command_count(self):
-        return self.execute_command('COMMAND COUNT')
-
     def readwrite(self):
-        """
-        Disables read queries for a connection to a Redis Cluster slave node.
-        """
+        "Disables read queries for a connection to a Redis Cluster slave node"
         return self.execute_command('READWRITE')
 
     def readonly(self):
-        """
-        Enables read queries for a connection to a Redis Cluster replica node.
-        """
+        "Enables read queries for a connection to a Redis Cluster replica node"
         return self.execute_command('READONLY')
 
     def config_get(self, pattern="*"):
-        """Return a dictionary of configuration based on the ``pattern``"""
+        "Return a dictionary of configuration based on the ``pattern``"
         return self.execute_command('CONFIG GET', pattern)
 
     def config_set(self, name, value):
@@ -455,33 +488,26 @@ class ManagementCommands:
         return self.execute_command('CONFIG SET', name, value)
 
     def config_resetstat(self):
-        """Reset runtime statistics"""
+        "Reset runtime statistics"
         return self.execute_command('CONFIG RESETSTAT')
 
     def config_rewrite(self):
-        """
-        Rewrite config file with the minimal change to reflect running config.
-        """
+        "Rewrite config file with the minimal change to reflect running config"
         return self.execute_command('CONFIG REWRITE')
 
     def cluster(self, cluster_arg, *args):
         return self.execute_command('CLUSTER %s' % cluster_arg.upper(), *args)
 
     def dbsize(self):
-        """Returns the number of keys in the current database"""
+        "Returns the number of keys in the current database"
         return self.execute_command('DBSIZE')
 
     def debug_object(self, key):
-        """Returns version specific meta information about a given key"""
+        "Returns version specific meta information about a given key"
         return self.execute_command('DEBUG OBJECT', key)
 
-    def debug_segfault(self):
-        raise NotImplementedError(
-            "DEBUG SEGFAULT is intentionally not implemented in the client."
-        )
-
     def echo(self, value):
-        """Echo the string back from the server"""
+        "Echo the string back from the server"
         return self.execute_command('ECHO', value)
 
     def flushall(self, asynchronous=False):
@@ -534,16 +560,6 @@ class ManagementCommands:
         """
         return self.execute_command('LASTSAVE')
 
-    def lolwut(self, *version_numbers):
-        """
-        Get the Redis version and a piece of generative computer art
-        See: https://redis.io/commands/lolwut
-        """
-        if version_numbers:
-            return self.execute_command('LOLWUT VERSION', *version_numbers)
-        else:
-            return self.execute_command('LOLWUT')
-
     def migrate(self, host, port, keys, destination_db, timeout,
                 copy=False, replace=False, auth=None):
         """
@@ -580,26 +596,12 @@ class ManagementCommands:
                                     timeout, *pieces)
 
     def object(self, infotype, key):
-        """Return the encoding, idletime, or refcount about the key"""
+        "Return the encoding, idletime, or refcount about the key"
         return self.execute_command('OBJECT', infotype, key, infotype=infotype)
 
-    def memory_doctor(self):
-        raise NotImplementedError(
-            "MEMORY DOCTOR is intentionally not implemented in the client."
-        )
-
-    def memory_help(self):
-        raise NotImplementedError(
-            "MEMORY HELP is intentionally not implemented in the client."
-        )
-
     def memory_stats(self):
-        """Return a dictionary of memory stats"""
+        "Return a dictionary of memory stats"
         return self.execute_command('MEMORY STATS')
-
-    def memory_malloc_stats(self):
-        """Return an internal statistics report from the memory allocator."""
-        return self.execute_command('MEMORY MALLOC-STATS')
 
     def memory_usage(self, key, samples=None):
         """
@@ -616,11 +618,11 @@ class ManagementCommands:
         return self.execute_command('MEMORY USAGE', key, *args)
 
     def memory_purge(self):
-        """Attempts to purge dirty pages for reclamation by allocator"""
+        "Attempts to purge dirty pages for reclamation by allocator"
         return self.execute_command('MEMORY PURGE')
 
     def ping(self):
-        """Ping the Redis server"""
+        "Ping the Redis server"
         return self.execute_command('PING')
 
     def quit(self):
@@ -824,6 +826,7 @@ class BasicKeyCommands:
     def exists(self, *names):
         "Returns the number of ``names`` that exist"
         return self.execute_command('EXISTS', *names)
+
     __contains__ = exists
 
     def expire(self, name, time):
@@ -882,7 +885,7 @@ class BasicKeyCommands:
 
         opset = set([ex, px, exat, pxat])
         if len(opset) > 2 or len(opset) > 1 and persist:
-            raise DataError("``ex``, ``px``, ``exat``, ``pxat``, "
+            raise DataError("``ex``, ``px``, ``exat``, ``pxat``",
                             "and ``persist`` are mutually exclusive.")
 
         pieces = []
@@ -1088,7 +1091,7 @@ class BasicKeyCommands:
         return self.execute_command("HRANDFIELD", key, *params)
 
     def randomkey(self):
-        """Returns the name of a random key"""
+        "Returns the name of a random key"
         return self.execute_command('RANDOMKEY')
 
     def rename(self, src, dst):
@@ -1098,11 +1101,10 @@ class BasicKeyCommands:
         return self.execute_command('RENAME', src, dst)
 
     def renamenx(self, src, dst):
-        """Rename key ``src`` to ``dst`` if ``dst`` doesn't already exist"""
+        "Rename key ``src`` to ``dst`` if ``dst`` doesn't already exist"
         return self.execute_command('RENAMENX', src, dst)
 
-    def restore(self, name, ttl, value, replace=False, absttl=False,
-                idletime=None, frequency=None):
+    def restore(self, name, ttl, value, replace=False, absttl=False):
         """
         Create a key using the provided serialized value, previously obtained
         using DUMP.
@@ -1113,37 +1115,16 @@ class BasicKeyCommands:
         ``absttl`` if True, specified ``ttl`` should represent an absolute Unix
         timestamp in milliseconds in which the key will expire. (Redis 5.0 or
         greater).
-
-        ``idletime`` Used for eviction, this is the number of seconds the
-        key must be idle, prior to execution.
-
-        ``frequency`` Used for eviction, this is the frequency counter of
-        the object stored at the key, prior to execution.
         """
         params = [name, ttl, value]
         if replace:
             params.append('REPLACE')
         if absttl:
             params.append('ABSTTL')
-        if idletime is not None:
-            params.append('IDLETIME')
-            try:
-                params.append(int(idletime))
-            except ValueError:
-                raise DataError("idletimemust be an integer")
-
-        if frequency is not None:
-            params.append('FREQ')
-            try:
-                params.append(int(frequency))
-            except ValueError:
-                raise DataError("frequency must be an integer")
-
         return self.execute_command('RESTORE', *params)
 
     def set(self, name, value,
-            ex=None, px=None, nx=False, xx=False, keepttl=False, get=False,
-            exat=None, pxat=None):
+            ex=None, px=None, nx=False, xx=False, keepttl=False, get=False):
         """
         Set the value at key ``name`` to ``value``
 
@@ -1161,52 +1142,29 @@ class BasicKeyCommands:
             (Available since Redis 6.0)
 
         ``get`` if True, set the value at key ``name`` to ``value`` and return
-            the old value stored at key, or None if the key did not exist.
+            the old value stored at key, or None when key did not exist.
             (Available since Redis 6.2)
-
-        ``exat`` sets an expire flag on key ``name`` for ``ex`` seconds,
-            specified in unix time.
-
-        ``pxat`` sets an expire flag on key ``name`` for ``ex`` milliseconds,
-            specified in unix time.
         """
         pieces = [name, value]
         options = {}
         if ex is not None:
             pieces.append('EX')
             if isinstance(ex, datetime.timedelta):
-                pieces.append(int(ex.total_seconds()))
-            elif isinstance(ex, int):
-                pieces.append(ex)
-            else:
-                raise DataError("ex must be datetime.timedelta or int")
+                ex = int(ex.total_seconds())
+            pieces.append(ex)
         if px is not None:
             pieces.append('PX')
             if isinstance(px, datetime.timedelta):
-                pieces.append(int(px.total_seconds() * 1000))
-            elif isinstance(px, int):
-                pieces.append(px)
-            else:
-                raise DataError("px must be datetime.timedelta or int")
-        if exat is not None:
-            pieces.append('EXAT')
-            if isinstance(exat, datetime.datetime):
-                s = int(exat.microsecond / 1000000)
-                exat = int(time.mktime(exat.timetuple())) + s
-            pieces.append(exat)
-        if pxat is not None:
-            pieces.append('PXAT')
-            if isinstance(pxat, datetime.datetime):
-                ms = int(pxat.microsecond / 1000)
-                pxat = int(time.mktime(pxat.timetuple())) * 1000 + ms
-            pieces.append(pxat)
-        if keepttl:
-            pieces.append('KEEPTTL')
+                px = int(px.total_seconds() * 1000)
+            pieces.append(px)
 
         if nx:
             pieces.append('NX')
         if xx:
             pieces.append('XX')
+
+        if keepttl:
+            pieces.append('KEEPTTL')
 
         if get:
             pieces.append('GET')
@@ -1251,53 +1209,6 @@ class BasicKeyCommands:
         Returns the length of the new string.
         """
         return self.execute_command('SETRANGE', name, offset, value)
-
-    def stralgo(self, algo, value1, value2, specific_argument='strings',
-                len=False, idx=False, minmatchlen=None, withmatchlen=False):
-        """
-        Implements complex algorithms that operate on strings.
-        Right now the only algorithm implemented is the LCS algorithm
-        (longest common substring). However new algorithms could be
-        implemented in the future.
-
-        ``algo`` Right now must be LCS
-        ``value1`` and ``value2`` Can be two strings or two keys
-        ``specific_argument`` Specifying if the arguments to the algorithm
-        will be keys or strings. strings is the default.
-        ``len`` Returns just the len of the match.
-        ``idx`` Returns the match positions in each string.
-        ``minmatchlen`` Restrict the list of matches to the ones of a given
-        minimal length. Can be provided only when ``idx`` set to True.
-        ``withmatchlen`` Returns the matches with the len of the match.
-        Can be provided only when ``idx`` set to True.
-        """
-        # check validity
-        supported_algo = ['LCS']
-        if algo not in supported_algo:
-            raise DataError("The supported algorithms are: %s"
-                            % (', '.join(supported_algo)))
-        if specific_argument not in ['keys', 'strings']:
-            raise DataError("specific_argument can be only"
-                            " keys or strings")
-        if len and idx:
-            raise DataError("len and idx cannot be provided together.")
-
-        pieces = [algo, specific_argument.upper(), value1, value2]
-        if len:
-            pieces.append(b'LEN')
-        if idx:
-            pieces.append(b'IDX')
-        try:
-            int(minmatchlen)
-            pieces.extend([b'MINMATCHLEN', minmatchlen])
-        except TypeError:
-            pass
-        if withmatchlen:
-            pieces.append(b'WITHMATCHLEN')
-
-        return self.execute_command('STRALGO', *pieces, len=len, idx=idx,
-                                    minmatchlen=minmatchlen,
-                                    withmatchlen=withmatchlen)
 
     def strlen(self, name):
         "Return the number of bytes stored in the value of ``name``"
@@ -1432,9 +1343,9 @@ class ListCommands:
         "Push ``values`` onto the head of the list ``name``"
         return self.execute_command('LPUSH', name, *values)
 
-    def lpushx(self, name, *values):
+    def lpushx(self, name, value):
         "Push ``value`` onto the head of the list ``name`` if ``name`` exists"
-        return self.execute_command('LPUSHX', name, *values)
+        return self.execute_command('LPUSHX', name, value)
 
     def lrange(self, name, start, end):
         """
@@ -1568,25 +1479,32 @@ class ListCommands:
 
         pieces = [name]
         if by is not None:
-            pieces.extend([b'BY', by])
+            pieces.append(b'BY')
+            pieces.append(by)
         if start is not None and num is not None:
-            pieces.extend([b'LIMIT', start, num])
+            pieces.append(b'LIMIT')
+            pieces.append(start)
+            pieces.append(num)
         if get is not None:
             # If get is a string assume we want to get a single value.
             # Otherwise assume it's an interable and we want to get multiple
             # values. We can't just iterate blindly because strings are
             # iterable.
             if isinstance(get, (bytes, str)):
-                pieces.extend([b'GET', get])
+                pieces.append(b'GET')
+                pieces.append(get)
             else:
                 for g in get:
-                    pieces.extend([b'GET', g])
+                    pieces.append(b'GET')
+                    pieces.append(g)
         if desc:
             pieces.append(b'DESC')
         if alpha:
             pieces.append(b'ALPHA')
         if store is not None:
-            pieces.extend([b'STORE', store])
+            pieces.append(b'STORE')
+            pieces.append(store)
+
         if groups:
             if not get or isinstance(get, (bytes, str)) or len(get) < 2:
                 raise DataError('when using "groups" the "get" argument '
@@ -1749,15 +1667,15 @@ class ScanCommands:
 class SetCommands:
     # SET COMMANDS
     def sadd(self, name, *values):
-        """Add ``value(s)`` to set ``name``"""
+        "Add ``value(s)`` to set ``name``"
         return self.execute_command('SADD', name, *values)
 
     def scard(self, name):
-        """Return the number of elements in set ``name``"""
+        "Return the number of elements in set ``name``"
         return self.execute_command('SCARD', name)
 
     def sdiff(self, keys, *args):
-        """Return the difference of sets specified by ``keys``"""
+        "Return the difference of sets specified by ``keys``"
         args = list_or_args(keys, args)
         return self.execute_command('SDIFF', *args)
 
@@ -1770,7 +1688,7 @@ class SetCommands:
         return self.execute_command('SDIFFSTORE', dest, *args)
 
     def sinter(self, keys, *args):
-        """Return the intersection of sets specified by ``keys``"""
+        "Return the intersection of sets specified by ``keys``"
         args = list_or_args(keys, args)
         return self.execute_command('SINTER', *args)
 
@@ -1783,17 +1701,15 @@ class SetCommands:
         return self.execute_command('SINTERSTORE', dest, *args)
 
     def sismember(self, name, value):
-        """
-        Return a boolean indicating if ``value`` is a member of set ``name``
-        """
+        "Return a boolean indicating if ``value`` is a member of set ``name``"
         return self.execute_command('SISMEMBER', name, value)
 
     def smembers(self, name):
-        """Return all members of the set ``name``"""
+        "Return all members of the set ``name``"
         return self.execute_command('SMEMBERS', name)
 
     def smove(self, src, dst, value):
-        """Move ``value`` from set ``src`` to set ``dst`` atomically"""
+        "Move ``value`` from set ``src`` to set ``dst`` atomically"
         return self.execute_command('SMOVE', src, dst, value)
 
     def spop(self, name, count=None):
@@ -1842,25 +1758,17 @@ class StreamsCommands:
         return self.execute_command('XACK', name, groupname, *ids)
 
     def xadd(self, name, fields, id='*', maxlen=None, approximate=True,
-             nomkstream=False, minid=None, limit=None):
+             nomkstream=False):
         """
         Add to a stream.
         name: name of the stream
         fields: dict of field/value pairs to insert into the stream
         id: Location to insert this record. By default it is appended.
-        maxlen: truncate old stream members beyond this size.
-        Can't be specified with minid.
+        maxlen: truncate old stream members beyond this size
         approximate: actual stream length may be slightly more than maxlen
         nomkstream: When set to true, do not make a stream
-        minid: the minimum id in the stream to query.
-        Can't be specified with maxlen.
-        limit: specifies the maximum number of entries to retrieve
         """
         pieces = []
-        if maxlen is not None and minid is not None:
-            raise DataError("Only one of ```maxlen``` or ```minid``` "
-                            "may be specified")
-
         if maxlen is not None:
             if not isinstance(maxlen, int) or maxlen < 1:
                 raise DataError('XADD maxlen must be a positive integer')
@@ -1868,13 +1776,6 @@ class StreamsCommands:
             if approximate:
                 pieces.append(b'~')
             pieces.append(str(maxlen))
-        if minid is not None:
-            pieces.append(b'MINID')
-            if approximate:
-                pieces.append(b'~')
-            pieces.append(minid)
-        if limit is not None:
-            pieces.extend([b'LIMIT', limit])
         if nomkstream:
             pieces.append(b'NOMKSTREAM')
         pieces.append(id)
@@ -2024,18 +1925,6 @@ class StreamsCommands:
         """
         return self.execute_command('XGROUP DESTROY', name, groupname)
 
-    def xgroup_createconsumer(self, name, groupname, consumername):
-        """
-        Consumers in a consumer group are auto-created every time a new
-        consumer name is mentioned by some command.
-        They can be explicitly created by using this command.
-        name: name of the stream.
-        groupname: name of the consumer group.
-        consumername: name of consumer to create.
-        """
-        return self.execute_command('XGROUP CREATECONSUMER', name, groupname,
-                                    consumername)
-
     def xgroup_setid(self, name, groupname, id):
         """
         Set the consumer group last delivered ID to something else.
@@ -2060,18 +1949,12 @@ class StreamsCommands:
         """
         return self.execute_command('XINFO GROUPS', name)
 
-    def xinfo_stream(self, name, full=False):
+    def xinfo_stream(self, name):
         """
         Returns general information about the stream.
         name: name of the stream.
-        full: optional boolean, false by default. Return full summary
         """
-        pieces = [name]
-        options = {}
-        if full:
-            pieces.append(b'FULL')
-            options = {'full': full}
-        return self.execute_command('XINFO STREAM', *pieces, **options)
+        return self.execute_command('XINFO STREAM', name)
 
     def xlen(self, name):
         """
@@ -2087,21 +1970,18 @@ class StreamsCommands:
         """
         return self.execute_command('XPENDING', name, groupname)
 
-    def xpending_range(self, name, groupname, idle=None,
-                       min=None, max=None, count=None,
-                       consumername=None):
+    def xpending_range(self, name, groupname, min, max, count,
+                       consumername=None, idle=None):
         """
         Returns information about pending messages, in a range.
-
         name: name of the stream.
         groupname: name of the consumer group.
-        idle: available from  version 6.2. filter entries by their
-        idle-time, given in milliseconds (optional).
         min: minimum stream ID.
         max: maximum stream ID.
         count: number of messages to return
         consumername: name of a consumer to filter by (optional).
-
+        idle: available from  version 6.2. filter entries by their
+        idle-time, given in milliseconds (optional).
         """
         if {min, max, count} == {None}:
             if idle is not None or consumername is not None:
@@ -2128,9 +2008,6 @@ class StreamsCommands:
             pieces.extend([min, max, count])
         except TypeError:
             pass
-        # consumername
-        if consumername:
-            pieces.append(consumername)
 
         return self.execute_command('XPENDING', *pieces, parse_detail=True)
 
@@ -2242,15 +2119,11 @@ class StreamsCommands:
         Trims old messages from a stream.
         name: name of the stream.
         maxlen: truncate old stream messages beyond this size
-        Can't be specified with minid.
         approximate: actual stream length may be slightly more than maxlen
-        minid: the minimum id in the stream to query
-        Can't be specified with maxlen.
-        limit: specifies the maximum number of entries to retrieve
         """
         pieces = []
         if maxlen is not None and minid is not None:
-            raise DataError("Only one of ``maxlen`` or ``minid`` "
+            raise DataError("Only one of ```maxlen``` or ```minid```",
                             "may be specified")
 
         if maxlen is not None:
@@ -2479,113 +2352,41 @@ class SortedSetCommands:
         keys.append(timeout)
         return self.execute_command('BZPOPMIN', *keys)
 
-    def _zrange(self, command, dest, name, start, end, desc=False,
-                byscore=False, bylex=False, withscores=False,
-                score_cast_func=float, offset=None, num=None):
-        if byscore and bylex:
-            raise DataError("``byscore`` and ``bylex`` can not be "
-                            "specified together.")
-        if (offset is not None and num is None) or \
-                (num is not None and offset is None):
-            raise DataError("``offset`` and ``num`` must both be specified.")
-        if bylex and withscores:
-            raise DataError("``withscores`` not supported in combination "
-                            "with ``bylex``.")
-        pieces = [command]
-        if dest:
-            pieces.append(dest)
-        pieces.extend([name, start, end])
-        if byscore:
-            pieces.append('BYSCORE')
-        if bylex:
-            pieces.append('BYLEX')
-        if desc:
-            pieces.append('REV')
-        if offset is not None and num is not None:
-            pieces.extend(['LIMIT', offset, num])
-        if withscores:
-            pieces.append('WITHSCORES')
-        options = {
-            'withscores': withscores,
-            'score_cast_func': score_cast_func
-        }
-        return self.execute_command(*pieces, **options)
-
     def zrange(self, name, start, end, desc=False, withscores=False,
-               score_cast_func=float, byscore=False, bylex=False,
-               offset=None, num=None):
+               score_cast_func=float):
         """
         Return a range of values from sorted set ``name`` between
         ``start`` and ``end`` sorted in ascending order.
 
         ``start`` and ``end`` can be negative, indicating the end of the range.
 
-        ``desc`` a boolean indicating whether to sort the results in reversed
-        order.
+        ``desc`` a boolean indicating whether to sort the results descendingly
 
         ``withscores`` indicates to return the scores along with the values.
-        The return type is a list of (value, score) pairs.
-
-        ``score_cast_func`` a callable used to cast the score return value.
-
-        ``byscore`` when set to True, returns the range of elements from the
-        sorted set having scores equal or between ``start`` and ``end``.
-
-        ``bylex`` when set to True, returns the range of elements from the
-        sorted set between the ``start`` and ``end`` lexicographical closed
-        range intervals.
-        Valid ``start`` and ``end`` must start with ( or [, in order to specify
-        whether the range interval is exclusive or inclusive, respectively.
-
-        ``offset`` and ``num`` are specified, then return a slice of the range.
-        Can't be provided when using ``bylex``.
-        """
-        return self._zrange('ZRANGE', None, name, start, end, desc, byscore,
-                            bylex, withscores, score_cast_func, offset, num)
-
-    def zrevrange(self, name, start, end, withscores=False,
-                  score_cast_func=float):
-        """
-        Return a range of values from sorted set ``name`` between
-        ``start`` and ``end`` sorted in descending order.
-
-        ``start`` and ``end`` can be negative, indicating the end of the range.
-
-        ``withscores`` indicates to return the scores along with the values
         The return type is a list of (value, score) pairs
 
         ``score_cast_func`` a callable used to cast the score return value
         """
-        return self.zrange(name, start, end, desc=True,
-                           withscores=withscores,
-                           score_cast_func=score_cast_func)
+        if desc:
+            return self.zrevrange(name, start, end, withscores,
+                                  score_cast_func)
+        pieces = ['ZRANGE', name, start, end]
+        if withscores:
+            pieces.append(b'WITHSCORES')
+        options = {
+            'withscores': withscores,
+            'score_cast_func': score_cast_func
+        }
+        return self.execute_command(*pieces, **options)
 
-    def zrangestore(self, dest, name, start, end,
-                    byscore=False, bylex=False, desc=False,
-                    offset=None, num=None):
+    def zrangestore(self, dest, name, start, end):
         """
         Stores in ``dest`` the result of a range of values from sorted set
         ``name`` between ``start`` and ``end`` sorted in ascending order.
 
         ``start`` and ``end`` can be negative, indicating the end of the range.
-
-        ``byscore`` when set to True, returns the range of elements from the
-        sorted set having scores equal or between ``start`` and ``end``.
-
-        ``bylex`` when set to True, returns the range of elements from the
-        sorted set between the ``start`` and ``end`` lexicographical closed
-        range intervals.
-        Valid ``start`` and ``end`` must start with ( or [, in order to specify
-        whether the range interval is exclusive or inclusive, respectively.
-
-        ``desc`` a boolean indicating whether to sort the results in reversed
-        order.
-
-        ``offset`` and ``num`` are specified, then return a slice of the range.
-        Can't be provided when using ``bylex``.
         """
-        return self._zrange('ZRANGESTORE', dest, name, start, end, desc,
-                            byscore, bylex, False, None, offset, num)
+        return self.execute_command('ZRANGESTORE', dest, name, start, end)
 
     def zrangebylex(self, name, min, max, start=None, num=None):
         """
@@ -2595,7 +2396,13 @@ class SortedSetCommands:
         If ``start`` and ``num`` are specified, then return a slice of the
         range.
         """
-        return self.zrange(name, min, max, bylex=True, offset=start, num=num)
+        if (start is not None and num is None) or \
+                (num is not None and start is None):
+            raise DataError("``start`` and ``num`` must both be specified")
+        pieces = ['ZRANGEBYLEX', name, min, max]
+        if start is not None and num is not None:
+            pieces.extend([b'LIMIT', start, num])
+        return self.execute_command(*pieces)
 
     def zrevrangebylex(self, name, max, min, start=None, num=None):
         """
@@ -2605,8 +2412,13 @@ class SortedSetCommands:
         If ``start`` and ``num`` are specified, then return a slice of the
         range.
         """
-        return self.zrange(name, max, min, desc=True,
-                           bylex=True, offset=start, num=num)
+        if (start is not None and num is None) or \
+                (num is not None and start is None):
+            raise DataError("``start`` and ``num`` must both be specified")
+        pieces = ['ZREVRANGEBYLEX', name, max, min]
+        if start is not None and num is not None:
+            pieces.extend([b'LIMIT', start, num])
+        return self.execute_command(*pieces)
 
     def zrangebyscore(self, name, min, max, start=None, num=None,
                       withscores=False, score_cast_func=float):
@@ -2622,29 +2434,19 @@ class SortedSetCommands:
 
         `score_cast_func`` a callable used to cast the score return value
         """
-        return self.zrange(name, min, max, byscore=True,
-                           offset=start, num=num,
-                           withscores=withscores,
-                           score_cast_func=score_cast_func)
-
-    def zrevrangebyscore(self, name, max, min, start=None, num=None,
-                         withscores=False, score_cast_func=float):
-        """
-        Return a range of values from the sorted set ``name`` with scores
-        between ``min`` and ``max`` in descending order.
-
-        If ``start`` and ``num`` are specified, then return a slice
-        of the range.
-
-        ``withscores`` indicates to return the scores along with the values.
-        The return type is a list of (value, score) pairs
-
-        ``score_cast_func`` a callable used to cast the score return value
-        """
-        return self.zrange(name, max, min, desc=True,
-                           byscore=True, offset=start,
-                           num=num, withscores=withscores,
-                           score_cast_func=score_cast_func)
+        if (start is not None and num is None) or \
+                (num is not None and start is None):
+            raise DataError("``start`` and ``num`` must both be specified")
+        pieces = ['ZRANGEBYSCORE', name, min, max]
+        if start is not None and num is not None:
+            pieces.extend([b'LIMIT', start, num])
+        if withscores:
+            pieces.append(b'WITHSCORES')
+        options = {
+            'withscores': withscores,
+            'score_cast_func': score_cast_func
+        }
+        return self.execute_command(*pieces, **options)
 
     def zrank(self, name, value):
         """
@@ -2682,6 +2484,56 @@ class SortedSetCommands:
         """
         return self.execute_command('ZREMRANGEBYSCORE', name, min, max)
 
+    def zrevrange(self, name, start, end, withscores=False,
+                  score_cast_func=float):
+        """
+        Return a range of values from sorted set ``name`` between
+        ``start`` and ``end`` sorted in descending order.
+
+        ``start`` and ``end`` can be negative, indicating the end of the range.
+
+        ``withscores`` indicates to return the scores along with the values
+        The return type is a list of (value, score) pairs
+
+        ``score_cast_func`` a callable used to cast the score return value
+        """
+        pieces = ['ZREVRANGE', name, start, end]
+        if withscores:
+            pieces.append(b'WITHSCORES')
+        options = {
+            'withscores': withscores,
+            'score_cast_func': score_cast_func
+        }
+        return self.execute_command(*pieces, **options)
+
+    def zrevrangebyscore(self, name, max, min, start=None, num=None,
+                         withscores=False, score_cast_func=float):
+        """
+        Return a range of values from the sorted set ``name`` with scores
+        between ``min`` and ``max`` in descending order.
+
+        If ``start`` and ``num`` are specified, then return a slice
+        of the range.
+
+        ``withscores`` indicates to return the scores along with the values.
+        The return type is a list of (value, score) pairs
+
+        ``score_cast_func`` a callable used to cast the score return value
+        """
+        if (start is not None and num is None) or \
+                (num is not None and start is None):
+            raise DataError("``start`` and ``num`` must both be specified")
+        pieces = ['ZREVRANGEBYSCORE', name, max, min]
+        if start is not None and num is not None:
+            pieces.extend([b'LIMIT', start, num])
+        if withscores:
+            pieces.append(b'WITHSCORES')
+        options = {
+            'withscores': withscores,
+            'score_cast_func': score_cast_func
+        }
+        return self.execute_command(*pieces, **options)
+
     def zrevrank(self, name, value):
         """
         Returns a 0-based value indicating the descending rank of
@@ -2710,20 +2562,6 @@ class SortedSetCommands:
         aggregated based on the ``aggregate``, or SUM if none is provided.
         """
         return self._zaggregate('ZUNIONSTORE', dest, keys, aggregate)
-
-    def zmscore(self, key, members):
-        """
-        Returns the scores associated with the specified members
-        in the sorted set stored at key.
-        ``members`` should be a list of the member name.
-        Return type is a list of score.
-        If the member does not exist, a None will be returned
-        in corresponding position.
-        """
-        if not members:
-            raise DataError('ZMSCORE members must be a non-empty list')
-        pieces = [key] + members
-        return self.execute_command('ZMSCORE', *pieces)
 
     def _zaggregate(self, command, dest, keys, aggregate=None,
                     **options):
@@ -2865,7 +2703,6 @@ class HashCommands:
 
 
 class PubSubCommands:
-    # PUBSUB COMMANDS
     def publish(self, channel, message):
         """
         Publish ``message`` on ``channel``.
@@ -2894,7 +2731,6 @@ class PubSubCommands:
 
 
 class ScriptCommands:
-    # SCRIPT COMMANDS
     def eval(self, script, numkeys, *keys_and_args):
         """
         Execute the Lua ``script``, specifying the ``numkeys`` the script
@@ -2926,28 +2762,9 @@ class ScriptCommands:
         """
         return self.execute_command('SCRIPT EXISTS', *args)
 
-    def script_debug(self, *args):
-        raise NotImplementedError(
-            "SCRIPT DEBUG is intentionally not implemented in the client."
-        )
-
-    def script_flush(self, sync_type=None):
-        """Flush all scripts from the script cache.
-        ``sync_type`` is by default SYNC (synchronous) but it can also be
-                      ASYNC.
-        See: https://redis.io/commands/script-flush
-        """
-
-        # Redis pre 6 had no sync_type.
-        if sync_type not in ["SYNC", "ASYNC", None]:
-            raise DataError("SCRIPT FLUSH defaults to SYNC in redis > 6.2, or "
-                            "accepts SYNC/ASYNC. For older versions, "
-                            "of redis leave as None.")
-        if sync_type is None:
-            pieces = []
-        else:
-            pieces = [sync_type]
-        return self.execute_command('SCRIPT FLUSH', *pieces)
+    def script_flush(self):
+        "Flush all scripts from the script cache"
+        return self.execute_command('SCRIPT FLUSH')
 
     def script_kill(self):
         "Kill the currently executing Lua script"
@@ -2969,39 +2786,17 @@ class ScriptCommands:
 
 class GeoCommands:
     # GEO COMMANDS
-    def geoadd(self, name, values, nx=False, xx=False, ch=False):
+    def geoadd(self, name, *values):
         """
         Add the specified geospatial items to the specified key identified
         by the ``name`` argument. The Geospatial items are given as ordered
         members of the ``values`` argument, each item or place is formed by
         the triad longitude, latitude and name.
-
-        Note: You can use ZREM to remove elements.
-
-        ``nx`` forces ZADD to only create new elements and not to update
-        scores for elements that already exist.
-
-        ``xx`` forces ZADD to only update scores of elements that already
-        exist. New elements will not be added.
-
-        ``ch`` modifies the return value to be the numbers of elements changed.
-        Changed elements include new elements that were added and elements
-        whose scores changed.
         """
-        if nx and xx:
-            raise DataError("GEOADD allows either 'nx' or 'xx', not both")
         if len(values) % 3 != 0:
             raise DataError("GEOADD requires places with lon, lat and name"
                             " values")
-        pieces = [name]
-        if nx:
-            pieces.append('NX')
-        if xx:
-            pieces.append('XX')
-        if ch:
-            pieces.append('CH')
-        pieces.extend(values)
-        return self.execute_command('GEOADD', *pieces)
+        return self.execute_command('GEOADD', name, *values)
 
     def geodist(self, name, place1, place2, unit=None):
         """
@@ -3034,7 +2829,7 @@ class GeoCommands:
 
     def georadius(self, name, longitude, latitude, radius, unit=None,
                   withdist=False, withcoord=False, withhash=False, count=None,
-                  sort=None, store=None, store_dist=None, any=False):
+                  sort=None, store=None, store_dist=None):
         """
         Return the members of the specified key identified by the
         ``name`` argument which are within the borders of the area specified
@@ -3068,12 +2863,11 @@ class GeoCommands:
                                       unit=unit, withdist=withdist,
                                       withcoord=withcoord, withhash=withhash,
                                       count=count, sort=sort, store=store,
-                                      store_dist=store_dist, any=any)
+                                      store_dist=store_dist)
 
     def georadiusbymember(self, name, member, radius, unit=None,
                           withdist=False, withcoord=False, withhash=False,
-                          count=None, sort=None, store=None, store_dist=None,
-                          any=False):
+                          count=None, sort=None, store=None, store_dist=None):
         """
         This command is exactly like ``georadius`` with the sole difference
         that instead of taking, as the center of the area to query, a longitude
@@ -3085,7 +2879,7 @@ class GeoCommands:
                                       withdist=withdist, withcoord=withcoord,
                                       withhash=withhash, count=count,
                                       sort=sort, store=store,
-                                      store_dist=store_dist, any=any)
+                                      store_dist=store_dist)
 
     def _georadiusgeneric(self, command, *args, **kwargs):
         pieces = list(args)
@@ -3094,28 +2888,23 @@ class GeoCommands:
         elif kwargs['unit']:
             pieces.append(kwargs['unit'])
         else:
-            pieces.append('m',)
-
-        if kwargs['any'] and kwargs['count'] is None:
-            raise DataError("``any`` can't be provided without ``count``")
+            pieces.append('m', )
 
         for arg_name, byte_repr in (
-                ('withdist', 'WITHDIST'),
-                ('withcoord', 'WITHCOORD'),
-                ('withhash', 'WITHHASH')):
+                ('withdist', b'WITHDIST'),
+                ('withcoord', b'WITHCOORD'),
+                ('withhash', b'WITHHASH')):
             if kwargs[arg_name]:
                 pieces.append(byte_repr)
 
-        if kwargs['count'] is not None:
-            pieces.extend(['COUNT', kwargs['count']])
-            if kwargs['any']:
-                pieces.append('ANY')
+        if kwargs['count']:
+            pieces.extend([b'COUNT', kwargs['count']])
 
         if kwargs['sort']:
             if kwargs['sort'] == 'ASC':
-                pieces.append('ASC')
+                pieces.append(b'ASC')
             elif kwargs['sort'] == 'DESC':
-                pieces.append('DESC')
+                pieces.append(b'DESC')
             else:
                 raise DataError("GEORADIUS invalid sort")
 
@@ -3131,147 +2920,15 @@ class GeoCommands:
 
         return self.execute_command(command, *pieces, **kwargs)
 
-    def geosearch(self, name, member=None, longitude=None, latitude=None,
-                  unit='m', radius=None, width=None, height=None, sort=None,
-                  count=None, any=False, withcoord=False,
-                  withdist=False, withhash=False):
-        """
-        Return the members of specified key identified by the
-        ``name`` argument, which are within the borders of the
-        area specified by a given shape. This command extends the
-        GEORADIUS command, so in addition to searching within circular
-        areas, it supports searching within rectangular areas.
-        This command should be used in place of the deprecated
-        GEORADIUS and GEORADIUSBYMEMBER commands.
-        ``member`` Use the position of the given existing
-         member in the sorted set. Can't be given with ``longitude``
-         and ``latitude``.
-        ``longitude`` and ``latitude`` Use the position given by
-        this coordinates. Can't be given with ``member``
-        ``radius`` Similar to GEORADIUS, search inside circular
-        area according the given radius. Can't be given with
-        ``height`` and ``width``.
-        ``height`` and ``width`` Search inside an axis-aligned
-        rectangle, determined by the given height and width.
-        Can't be given with ``radius``
-        ``unit`` must be one of the following : m, km, mi, ft.
-        `m` for meters (the default value), `km` for kilometers,
-        `mi` for miles and `ft` for feet.
-        ``sort`` indicates to return the places in a sorted way,
-        ASC for nearest to farest and DESC for farest to nearest.
-        ``count`` limit the results to the first count matching items.
-        ``any`` is set to True, the command will return as soon as
-        enough matches are found. Can't be provided without ``count``
-        ``withdist`` indicates to return the distances of each place.
-        ``withcoord`` indicates to return the latitude and longitude of
-        each place.
-        ``withhash`` indicates to return the geohash string of each place.
-        """
-
-        return self._geosearchgeneric('GEOSEARCH',
-                                      name, member=member, longitude=longitude,
-                                      latitude=latitude, unit=unit,
-                                      radius=radius, width=width,
-                                      height=height, sort=sort, count=count,
-                                      any=any, withcoord=withcoord,
-                                      withdist=withdist, withhash=withhash,
-                                      store=None, store_dist=None)
-
-    def geosearchstore(self, dest, name, member=None, longitude=None,
-                       latitude=None, unit='m', radius=None, width=None,
-                       height=None, sort=None, count=None, any=False,
-                       storedist=False):
-        """
-        This command is like GEOSEARCH, but stores the result in
-        ``dest``. By default, it stores the results in the destination
-        sorted set with their geospatial information.
-        if ``store_dist`` set to True, the command will stores the
-        items in a sorted set populated with their distance from the
-        center of the circle or box, as a floating-point number.
-        """
-        return self._geosearchgeneric('GEOSEARCHSTORE',
-                                      dest, name, member=member,
-                                      longitude=longitude, latitude=latitude,
-                                      unit=unit, radius=radius, width=width,
-                                      height=height, sort=sort, count=count,
-                                      any=any, withcoord=None,
-                                      withdist=None, withhash=None,
-                                      store=None, store_dist=storedist)
-
-    def _geosearchgeneric(self, command, *args, **kwargs):
-        pieces = list(args)
-
-        # FROMMEMBER or FROMLONLAT
-        if kwargs['member'] is None:
-            if kwargs['longitude'] is None or kwargs['latitude'] is None:
-                raise DataError("GEOSEARCH must have member or"
-                                " longitude and latitude")
-        if kwargs['member']:
-            if kwargs['longitude'] or kwargs['latitude']:
-                raise DataError("GEOSEARCH member and longitude or latitude"
-                                " cant be set together")
-            pieces.extend([b'FROMMEMBER', kwargs['member']])
-        if kwargs['longitude'] and kwargs['latitude']:
-            pieces.extend([b'FROMLONLAT',
-                           kwargs['longitude'], kwargs['latitude']])
-
-        # BYRADIUS or BYBOX
-        if kwargs['radius'] is None:
-            if kwargs['width'] is None or kwargs['height'] is None:
-                raise DataError("GEOSEARCH must have radius or"
-                                " width and height")
-        if kwargs['unit'] is None:
-            raise DataError("GEOSEARCH must have unit")
-        if kwargs['unit'].lower() not in ('m', 'km', 'mi', 'ft'):
-            raise DataError("GEOSEARCH invalid unit")
-        if kwargs['radius']:
-            if kwargs['width'] or kwargs['height']:
-                raise DataError("GEOSEARCH radius and width or height"
-                                " cant be set together")
-            pieces.extend([b'BYRADIUS', kwargs['radius'], kwargs['unit']])
-        if kwargs['width'] and kwargs['height']:
-            pieces.extend([b'BYBOX',
-                           kwargs['width'], kwargs['height'], kwargs['unit']])
-
-        # sort
-        if kwargs['sort']:
-            if kwargs['sort'].upper() == 'ASC':
-                pieces.append(b'ASC')
-            elif kwargs['sort'].upper() == 'DESC':
-                pieces.append(b'DESC')
-            else:
-                raise DataError("GEOSEARCH invalid sort")
-
-        # count any
-        if kwargs['count']:
-            pieces.extend([b'COUNT', kwargs['count']])
-            if kwargs['any']:
-                pieces.append(b'ANY')
-        elif kwargs['any']:
-            raise DataError("GEOSEARCH ``any`` can't be provided "
-                            "without count")
-
-        # other properties
-        for arg_name, byte_repr in (
-                ('withdist', b'WITHDIST'),
-                ('withcoord', b'WITHCOORD'),
-                ('withhash', b'WITHHASH'),
-                ('store_dist', b'STOREDIST')):
-            if kwargs[arg_name]:
-                pieces.append(byte_repr)
-
-        return self.execute_command(command, *pieces, **kwargs)
-
 
 class ModuleCommands:
     # MODULE COMMANDS
-    def module_load(self, path, *args):
+    def module_load(self, path):
         """
         Loads the module from ``path``.
-        Passes all ``*args`` to the module, during loading.
         Raises ``ModuleError`` if a module is not found at ``path``.
         """
-        return self.execute_command('MODULE LOAD', path, *args)
+        return self.execute_command('MODULE LOAD', path)
 
     def module_unload(self, name):
         """
@@ -3327,6 +2984,7 @@ class BitFieldOperation:
     """
     Command builder for BITFIELD commands.
     """
+
     def __init__(self, client, key, default_overflow=None):
         self.client = client
         self.key = key
@@ -3420,6 +3078,190 @@ class BitFieldOperation:
         return self.client.execute_command(*command)
 
 
+class SentinalCommands:
+    """
+    A class containing the commands specific to redis sentinal. This class is
+    to be used as a mixin.
+    """
+
+    def sentinel(self, *args):
+        "Redis Sentinel's SENTINEL command."
+        warnings.warn(
+            DeprecationWarning('Use the individual sentinel_* methods'))
+
+    def sentinel_get_master_addr_by_name(self, service_name):
+        "Returns a (host, port) pair for the given ``service_name``"
+        return self.execute_command('SENTINEL GET-MASTER-ADDR-BY-NAME',
+                                    service_name)
+
+    def sentinel_master(self, service_name):
+        "Returns a dictionary containing the specified masters state."
+        return self.execute_command('SENTINEL MASTER', service_name)
+
+    def sentinel_masters(self):
+        "Returns a list of dictionaries containing each master's state."
+        return self.execute_command('SENTINEL MASTERS')
+
+    def sentinel_monitor(self, name, ip, port, quorum):
+        "Add a new master to Sentinel to be monitored"
+        return self.execute_command('SENTINEL MONITOR', name, ip, port, quorum)
+
+    def sentinel_remove(self, name):
+        "Remove a master from Sentinel's monitoring"
+        return self.execute_command('SENTINEL REMOVE', name)
+
+    def sentinel_sentinels(self, service_name):
+        "Returns a list of sentinels for ``service_name``"
+        return self.execute_command('SENTINEL SENTINELS', service_name)
+
+    def sentinel_set(self, name, option, value):
+        "Set Sentinel monitoring parameters for a given master"
+        return self.execute_command('SENTINEL SET', name, option, value)
+
+    def sentinel_slaves(self, service_name):
+        "Returns a list of slaves for ``service_name``"
+        return self.execute_command('SENTINEL SLAVES', service_name)
+
+
+class ClusterMultiKeyCommands:
+    """
+    A class containing commands that handle more than one key
+    """
+
+    def _partition_keys_by_slot(self, keys):
+        """
+        Split keys into a dictionary that maps a slot to
+        a list of keys.
+        """
+        slots_to_keys = {}
+        for key in keys:
+            k = self.encoder.encode(key)
+            slot = key_slot(k)
+            slots_to_keys.setdefault(slot, []).append(key)
+
+        return slots_to_keys
+
+    def mget_nonatomic(self, keys, *args):
+        """
+        Splits the keys into different slots and then calls MGET
+        for the keys of every slot. This operation will not be atomic
+        if keys belong to more than one slot.
+
+        Returns a list of values ordered identically to ``keys``
+        """
+
+        from redis.client import EMPTY_RESPONSE
+        options = {}
+        if not args:
+            options[EMPTY_RESPONSE] = []
+
+        # Concatenate all keys into a list
+        keys = list_or_args(keys, args)
+        # Split keys into slots
+        slots_to_keys = self._partition_keys_by_slot(keys)
+
+        # Call MGET for every slot and concatenate
+        # the results
+        # We must make sure that the keys are returned in order
+        all_results = {}
+        for slot_keys in slots_to_keys.values():
+            slot_values = self.execute_command(
+                'MGET', *slot_keys, **options)
+
+            slot_results = dict(zip(slot_keys, slot_values))
+            all_results.update(slot_results)
+
+        # Sort the results
+        vals_in_order = [all_results[key] for key in keys]
+        return vals_in_order
+
+    def mset_nonatomic(self, mapping):
+        """
+        Sets key/values based on a mapping. Mapping is a dictionary of
+        key/value pairs. Both keys and values should be strings or types that
+        can be cast to a string via str().
+
+        Splits the keys into different slots and then calls MSET
+        for the keys of every slot. This operation will not be atomic
+        if keys belong to more than one slot.
+        """
+
+        # Partition the keys by slot
+        slots_to_pairs = {}
+        for pair in mapping.items():
+            # encode the key
+            k = self.encoder.encode(pair[0])
+            slot = key_slot(k)
+            slots_to_pairs.setdefault(slot, []).extend(pair)
+
+        # Call MSET for every slot and concatenate
+        # the results (one result per slot)
+        res = []
+        for pairs in slots_to_pairs.values():
+            res.append(self.execute_command('MSET', *pairs))
+
+        return res
+
+    def _split_command_across_slots(self, command, *keys):
+        """
+        Runs the given command once for the keys
+        of each slot. Returns the sum of the return values.
+        """
+        # Partition the keys by slot
+        slots_to_keys = self._partition_keys_by_slot(keys)
+
+        # Sum up the reply from each command
+        total = 0
+        for slot_keys in slots_to_keys.values():
+            total += self.execute_command(command, *slot_keys)
+
+        return total
+
+    def exists(self, *keys):
+        """
+        Returns the number of ``names`` that exist in the
+        whole cluster. The keys are first split up into slots
+        and then an EXISTS command is sent for every slot
+        """
+        return self._split_command_across_slots('EXISTS', *keys)
+
+    def delete(self, *keys):
+        """
+        Deletes the given keys in the cluster.
+        The keys are first split up into slots
+        and then an DEL command is sent for every slot
+
+        Non-existant keys are ignored.
+        Returns the number of keys that were deleted.
+        """
+        return self._split_command_across_slots('DEL', *keys)
+
+    def touch(self, *keys):
+        """
+        Updates the last access time of given keys across the
+        cluster.
+
+        The keys are first split up into slots
+        and then an TOUCH command is sent for every slot
+
+        Non-existant keys are ignored.
+        Returns the number of keys that were touched.
+        """
+        return self._split_command_across_slots('TOUCH', *keys)
+
+    def unlink(self, *keys):
+        """
+        Remove the specified keys in a different thread.
+
+        The keys are first split up into slots
+        and then an TOUCH command is sent for every slot
+
+        Non-existant keys are ignored.
+        Returns the number of keys that were unlinked.
+        """
+        return self._split_command_across_slots('UNLINK', *keys)
+
+
 class DataAccessCommands(BasicKeyCommands, ListCommands,
                          ScanCommands, SetCommands, StreamsCommands,
                          SortedSetCommands,
@@ -3431,9 +3273,663 @@ class DataAccessCommands(BasicKeyCommands, ListCommands,
     """
 
 
-class CoreCommands(AclCommands, DataAccessCommands, ManagementCommands,
-                   ModuleCommands, PubSubCommands, ScriptCommands):
+class Commands(AclCommands, DataAccessCommands, ManagementCommands,
+               ModuleCommands, PubSubCommands, ScriptCommands):
     """
     A class containing all of the implemented redis commands. This class is
     to be used as a mixin.
     """
+
+
+class ClusterManagementCommands:
+    def bgsave(self, schedule=True, target_nodes=None):
+        """
+        Tell the Redis server to save its data to disk.  Unlike save(),
+        this method is asynchronous and returns immediately.
+        """
+        pieces = []
+        if schedule:
+            pieces.append("SCHEDULE")
+        return self.execute_command('BGSAVE',
+                                    *pieces,
+                                    target_nodes=target_nodes)
+
+    def client_getname(self, target_nodes=None):
+        """
+        Returns the current connection name from all nodes.
+        The result will be a dictionary with the IP and
+        connection name.
+        """
+        return self.execute_command('CLIENT GETNAME',
+                                    target_nodes=target_nodes)
+
+    def client_getredir(self, target_nodes=None):
+        """Returns the ID (an integer) of the client to whom we are
+        redirecting tracking notifications.
+
+        see: https://redis.io/commands/client-getredir
+        """
+        return self.execute_command('CLIENT GETREDIR',
+                                    target_nodes=target_nodes)
+
+    def client_id(self, target_nodes=None):
+        """Returns the current connection id"""
+        return self.execute_command('CLIENT ID',
+                                    target_nodes=target_nodes)
+
+    def client_info(self, target_nodes=None):
+        """
+        Returns information and statistics about the current
+        client connection.
+        """
+        return self.execute_command('CLIENT INFO',
+                                    target_nodes=target_nodes)
+
+    def client_kill_filter(self, _id=None, _type=None, addr=None,
+                           skipme=None, laddr=None, user=None,
+                           target_nodes=None):
+        """
+        Disconnects client(s) using a variety of filter options
+        :param id: Kills a client by its unique ID field
+        :param type: Kills a client by type where type is one of 'normal',
+        'master', 'slave' or 'pubsub'
+        :param addr: Kills a client by its 'address:port'
+        :param skipme: If True, then the client calling the command
+        will not get killed even if it is identified by one of the filter
+        options. If skipme is not provided, the server defaults to skipme=True
+        :param laddr: Kills a client by its 'local (bind) address:port'
+        :param user: Kills a client for a specific user name
+        """
+        args = []
+        if _type is not None:
+            client_types = ('normal', 'master', 'slave', 'pubsub')
+            if str(_type).lower() not in client_types:
+                raise DataError("CLIENT KILL type must be one of %r" % (
+                    client_types,))
+            args.extend((b'TYPE', _type))
+        if skipme is not None:
+            if not isinstance(skipme, bool):
+                raise DataError("CLIENT KILL skipme must be a bool")
+            if skipme:
+                args.extend((b'SKIPME', b'YES'))
+            else:
+                args.extend((b'SKIPME', b'NO'))
+        if _id is not None:
+            args.extend((b'ID', _id))
+        if addr is not None:
+            args.extend((b'ADDR', addr))
+        if laddr is not None:
+            args.extend((b'LADDR', laddr))
+        if user is not None:
+            args.extend((b'USER', user))
+        if not args:
+            raise DataError("CLIENT KILL <filter> <value> ... ... <filter> "
+                            "<value> must specify at least one filter")
+        return self.execute_command('CLIENT KILL', *args,
+                                    target_nodes=target_nodes)
+
+    def client_kill(self, address, target_nodes=None):
+        "Disconnects the client at ``address`` (ip:port)"
+        return self.execute_command('CLIENT KILL', address,
+                                    target_nodes=target_nodes)
+
+    def client_list(self, _type=None, target_nodes=None):
+        """
+        Returns a list of currently connected clients to the entire cluster.
+        If type of client specified, only that type will be returned.
+        :param _type: optional. one of the client types (normal, master,
+         replica, pubsub)
+        """
+        if _type is not None:
+            client_types = ('normal', 'master', 'replica', 'pubsub')
+            if str(_type).lower() not in client_types:
+                raise DataError("CLIENT LIST _type must be one of %r" % (
+                    client_types,))
+            return self.execute_command('CLIENT LIST',
+                                        b'TYPE',
+                                        _type,
+                                        target_noes=target_nodes)
+        return self.execute_command('CLIENT LIST',
+                                    target_nodes=target_nodes)
+
+    def client_pause(self, timeout, target_nodes=None):
+        """
+        Suspend all the Redis clients for the specified amount of time
+        :param timeout: milliseconds to pause clients
+        """
+        if not isinstance(timeout, int):
+            raise DataError("CLIENT PAUSE timeout must be an integer")
+        return self.execute_command('CLIENT PAUSE', str(timeout),
+                                    target_nodes=target_nodes)
+
+    def client_reply(self, reply, target_nodes=None):
+        """Enable and disable redis server replies.
+        ``reply`` Must be ON OFF or SKIP,
+            ON - The default most with server replies to commands
+            OFF - Disable server responses to commands
+            SKIP - Skip the response of the immediately following command.
+
+        Note: When setting OFF or SKIP replies, you will need a client object
+        with a timeout specified in seconds, and will need to catch the
+        TimeoutError.
+              The test_client_reply unit test illustrates this, and
+              conftest.py has a client with a timeout.
+        See https://redis.io/commands/client-reply
+        """
+        replies = ['ON', 'OFF', 'SKIP']
+        if reply not in replies:
+            raise DataError('CLIENT REPLY must be one of %r' % replies)
+        return self.execute_command("CLIENT REPLY", reply,
+                                    target_nodes=target_nodes)
+
+    def client_setname(self, name, target_nodes=None):
+        "Sets the current connection name"
+        return self.execute_command('CLIENT SETNAME', name,
+                                    target_nodes=target_nodes)
+
+    def client_trackinginfo(self, target_nodes=None):
+        """
+        Returns the information about the current client connection's
+        use of the server assisted client side cache.
+        See https://redis.io/commands/client-trackinginfo
+        """
+        return self.execute_command('CLIENT TRACKINGINFO',
+                                    target_nodes=target_nodes)
+
+    def client_unblock(self, client_id, error=False, target_nodes=None):
+        """
+        Unblocks a connection by its client id.
+        If ``error`` is True, unblocks the client with a special error message.
+        If ``error`` is False (default), the client is unblocked using the
+        regular timeout mechanism.
+        """
+        args = ['CLIENT UNBLOCK', int(client_id)]
+        if error:
+            args.append(b'ERROR')
+        return self.execute_command(*args, target_nodes=target_nodes)
+
+    def client_unpause(self, target_nodes=None):
+        """
+        Unpause all redis clients
+        """
+        return self.execute_command('CLIENT UNPAUSE',
+                                    target_nodes=target_nodes)
+
+    def config_get(self, pattern="*", target_nodes=None):
+        """Return a dictionary of configuration based on the ``pattern``"""
+        return self.execute_command('CONFIG GET',
+                                    pattern,
+                                    target_nodes=target_nodes)
+
+    def config_resetstat(self, target_nodes=None):
+        """Reset runtime statistics"""
+        return self.execute_command('CONFIG RESETSTAT',
+                                    target_nodes=target_nodes)
+
+    def config_rewrite(self, target_nodes=None):
+        """
+        Rewrite config file with the minimal change to reflect running config.
+        """
+        return self.execute_command('CONFIG REWRITE',
+                                    target_nodes=target_nodes)
+
+    def config_set(self, name, value, target_nodes=None):
+        "Set config item ``name`` with ``value``"
+        return self.execute_command('CONFIG SET',
+                                    name,
+                                    value,
+                                    target_nodes=target_nodes)
+
+    def dbsize(self, target_nodes=None):
+        """
+        Sums the number of keys in the target nodes' DB.
+        If no target nodes are specified, send to the entire cluster and sum
+         the results.
+
+        :target_nodes: 'ClusterNode' or 'list(ClusterNodes)'
+            The node/s to execute the command on
+        """
+        return self.execute_command('DBSIZE',
+                                    target_nodes=target_nodes)
+
+    def debug_object(self, key):
+        raise NotImplementedError(
+            "DEBUG OBJECT is intentionally not implemented in the client."
+        )
+
+    def debug_segfault(self):
+        raise NotImplementedError(
+            "DEBUG SEGFAULT is intentionally not implemented in the client."
+        )
+
+    def echo(self, value, target_nodes):
+        """Echo the string back from the server"""
+        return self.execute_command('ECHO', value,
+                                    target_nodes=target_nodes)
+
+    def flushall(self, asynchronous=False, target_nodes=None):
+        """
+        Delete all keys in the database on all hosts.
+        In cluster mode this method is the same as flushdb
+
+        ``asynchronous`` indicates whether the operation is
+        executed asynchronously by the server.
+        """
+        args = []
+        if asynchronous:
+            args.append(b'ASYNC')
+        return self.execute_command('FLUSHALL',
+                                    *args,
+                                    target_nodes=target_nodes)
+
+    def flushdb(self, asynchronous=False, target_nodes=None):
+        """
+        Delete all keys in the database.
+
+        ``asynchronous`` indicates whether the operation is
+        executed asynchronously by the server.
+        """
+        args = []
+        if asynchronous:
+            args.append(b'ASYNC')
+        return self.execute_command('FLUSHDB',
+                                    *args,
+                                    target_nodes=target_nodes)
+
+    def info(self, section=None, target_nodes=None):
+        """
+        Returns a dictionary containing information about the Redis server
+
+        The ``section`` option can be used to select a specific section
+        of information
+
+        The section option is not supported by older versions of Redis Server,
+        and will generate ResponseError
+        """
+        if section is None:
+            return self.execute_command('INFO',
+                                        target_nodes=target_nodes)
+        else:
+            return self.execute_command('INFO',
+                                        section,
+                                        target_nodes=target_nodes)
+
+    def lastsave(self, target_nodes=None):
+        """
+        Return a Python datetime object representing the last time the
+        Redis database was saved to disk
+        """
+        return self.execute_command('LASTSAVE',
+                                    target_nodes=target_nodes)
+
+    def memory_doctor(self):
+        raise NotImplementedError(
+            "MEMORY DOCTOR is intentionally not implemented in the client."
+        )
+
+    def memory_help(self):
+        raise NotImplementedError(
+            "MEMORY HELP is intentionally not implemented in the client."
+        )
+
+    def memory_malloc_stats(self, target_nodes=None):
+        """Return an internal statistics report from the memory allocator."""
+        return self.execute_command('MEMORY MALLOC-STATS',
+                                    target_nodes=target_nodes)
+
+    def memory_purge(self, target_nodes=None):
+        """Attempts to purge dirty pages for reclamation by allocator"""
+        return self.execute_command('MEMORY PURGE',
+                                    target_nodes=target_nodes)
+
+    def memory_stats(self, target_nodes=None):
+        """Return a dictionary of memory stats"""
+        return self.execute_command('MEMORY STATS',
+                                    target_nodes=target_nodes)
+
+    def memory_usage(self, key, samples=None):
+        """
+        Return the total memory usage for key, its value and associated
+        administrative overheads.
+
+        For nested data structures, ``samples`` is the number of elements to
+        sample. If left unspecified, the server's default is 5. Use 0 to sample
+        all elements.
+        """
+        args = []
+        if isinstance(samples, int):
+            args.extend([b'SAMPLES', samples])
+        return self.execute_command('MEMORY USAGE', key, *args)
+
+    def migrate(self, host, source_node, port, keys, destination_db, timeout,
+                copy=False, replace=False, auth=None):
+        """
+        Migrate 1 or more keys from the source_node Redis server to a different
+        server specified by the ``host``, ``port`` and ``destination_db``.
+
+        The ``timeout``, specified in milliseconds, indicates the maximum
+        time the connection between the two servers can be idle before the
+        command is interrupted.
+
+        If ``copy`` is True, the specified ``keys`` are NOT deleted from
+        the source server.
+
+        If ``replace`` is True, this operation will overwrite the keys
+        on the destination server if they exist.
+
+        If ``auth`` is specified, authenticate to the destination server with
+        the password provided.
+        """
+        keys = list_or_args(keys, [])
+        if not keys:
+            raise DataError('MIGRATE requires at least one key')
+        pieces = []
+        if copy:
+            pieces.append(b'COPY')
+        if replace:
+            pieces.append(b'REPLACE')
+        if auth:
+            pieces.append(b'AUTH')
+            pieces.append(auth)
+        pieces.append(b'KEYS')
+        pieces.extend(keys)
+        return self.execute_command('MIGRATE', host, port, '', destination_db,
+                                    timeout, *pieces,
+                                    target_nodes=source_node)
+
+    def object(self, infotype, key):
+        """Return the encoding, idletime, or refcount about the key"""
+        return self.execute_command('OBJECT', infotype, key, infotype=infotype)
+
+    def ping(self, target_nodes=None):
+        """
+        Ping the cluster's servers.
+        If no target nodes are specified, sent to all nodes and returns True if
+         the ping was successful across all nodes.
+
+        :target_nodes: 'ClusterNode' or 'list(ClusterNodes)'
+            The node/s to execute the command on
+        """
+        return self.execute_command('PING',
+                                    target_nodes=target_nodes)
+
+    def save(self):
+        """
+        Tell the Redis server to save its data to disk,
+        blocking until the save is complete
+        """
+        return self.execute_command('SAVE')
+
+    def shutdown(self, save=False, nosave=False):
+        """Shutdown the Redis server.  If Redis has persistence configured,
+        data will be flushed before shutdown.  If the "save" option is set,
+        a data flush will be attempted even if there is no persistence
+        configured.  If the "nosave" option is set, no data flush will be
+        attempted.  The "save" and "nosave" options cannot both be set.
+        """
+        if save and nosave:
+            raise DataError('SHUTDOWN save and nosave cannot both be set')
+        args = ['SHUTDOWN']
+        if save:
+            args.append('SAVE')
+        if nosave:
+            args.append('NOSAVE')
+        try:
+            self.execute_command(*args)
+        except ConnectionError:
+            # a ConnectionError here is expected
+            return
+        raise RedisError("SHUTDOWN seems to have failed.")
+
+    def slowlog_get(self, num=None, target_nodes=None):
+        """
+        Get the entries from the slowlog. If ``num`` is specified, get the
+        most recent ``num`` items.
+        """
+        args = ['SLOWLOG GET']
+        if num is not None:
+            args.append(num)
+
+        return self.execute_command(*args,
+                                    target_nodes=target_nodes)
+
+    def slowlog_len(self, target_nodes=None):
+        "Get the number of items in the slowlog"
+        return self.execute_command('SLOWLOG LEN',
+                                    target_nodes=target_nodes)
+
+    def slowlog_reset(self, target_nodes=None):
+        "Remove all items in the slowlog"
+        return self.execute_command('SLOWLOG RESET',
+                                    target_nodes=target_nodes)
+
+    def time(self, target_nodes=None):
+        """
+        Returns the server time as a 2-item tuple of ints:
+        (seconds since epoch, microseconds into this second).
+        """
+        return self.execute_command('TIME', target_nodes=target_nodes)
+
+    def wait(self, num_replicas, timeout, target_nodes=None):
+        """
+        Redis synchronous replication
+        That returns the number of replicas that processed the query when
+        we finally have at least ``num_replicas``, or when the ``timeout`` was
+        reached.
+
+        In cluster mode the WAIT command will be sent to all primaries
+        and the result will be summed up
+        """
+        return self.execute_command('WAIT', num_replicas,
+                                    timeout,
+                                    target_nodes=target_nodes)
+
+
+class ClusterCommands(ClusterManagementCommands, ClusterMultiKeyCommands,
+                      DataAccessCommands, PubSubCommands):
+    def cluster_addslots(self, target_node, *slots):
+        """
+        Assign new hash slots to receiving node. Sends to specified node.
+
+        :target_node: 'ClusterNode'
+            The node to execute the command on
+        """
+        return self.execute_command('CLUSTER ADDSLOTS', *slots,
+                                    target_nodes=target_node)
+
+    def cluster_countkeysinslot(self, slot_id):
+        """
+        Return the number of local keys in the specified hash slot
+        Send to node based on specified slot_id
+        """
+        return self.execute_command('CLUSTER COUNTKEYSINSLOT', slot_id)
+
+    def cluster_count_failure_report(self, node_id):
+        """
+        Return the number of failure reports active for a given node
+        Sends to a random node
+        """
+        return self.execute_command('CLUSTER COUNT-FAILURE-REPORTS', node_id)
+
+    def cluster_delslots(self, *slots):
+        """
+        Set hash slots as unbound in the cluster.
+        It determines by it self what node the slot is in and sends it there
+
+        Returns a list of the results for each processed slot.
+        """
+        return [
+            self.execute_command('CLUSTER DELSLOTS', slot)
+            for slot in slots
+        ]
+
+    def cluster_failover(self, target_node, option=None):
+        """
+        Forces a slave to perform a manual failover of its master
+        Sends to specified node
+
+        :target_node: 'ClusterNode'
+            The node to execute the command on
+        """
+        if option:
+            if option.upper() not in ['FORCE', 'TAKEOVER']:
+                raise RedisError(
+                    'Invalid option for CLUSTER FAILOVER command: {0}'.format(
+                        option))
+            else:
+                return self.execute_command('CLUSTER FAILOVER', option,
+                                            target_nodes=target_node)
+        else:
+            return self.execute_command('CLUSTER FAILOVER',
+                                        target_nodes=target_node)
+
+    def cluster_info(self, target_node=None):
+        """
+        Provides info about Redis Cluster node state.
+        The command will be sent to a random node in the cluster if no target
+        node is specified.
+
+        :target_node: 'ClusterNode'
+            The node to execute the command on
+        """
+        return self.execute_command('CLUSTER INFO', target_nodes=target_node)
+
+    def cluster_keyslot(self, key):
+        """
+        Returns the hash slot of the specified key
+        Sends to random node in the cluster
+        """
+        return self.execute_command('CLUSTER KEYSLOT', key)
+
+    def cluster_meet(self, target_nodes, host, port):
+        """
+        Force a node cluster to handshake with another node.
+        Sends to specified node.
+
+        :target_nodes: 'ClusterNode' or 'list(ClusterNodes)'
+            The node/s to execute the command on
+        """
+        return self.execute_command('CLUSTER MEET', host, port,
+                                    target_nodes=target_nodes)
+
+    def cluster_nodes(self):
+        """
+        Force a node cluster to handshake with another node
+
+        Sends to random node in the cluster
+        """
+        return self.execute_command('CLUSTER NODES')
+
+    def cluster_replicate(self, target_nodes, node_id):
+        """
+        Reconfigure a node as a slave of the specified master node
+
+        :target_nodes: 'ClusterNode' or 'list(ClusterNodes)'
+            The node/s to execute the command on
+        """
+        return self.execute_command('CLUSTER REPLICATE', node_id,
+                                    target_nodes=target_nodes)
+
+    def cluster_reset(self, target_nodes, soft=True):
+        """
+        Reset a Redis Cluster node
+
+        If 'soft' is True then it will send 'SOFT' argument
+        If 'soft' is False then it will send 'HARD' argument
+
+        :target_nodes: 'ClusterNode' or 'list(ClusterNodes)'
+            The node/s to execute the command on
+        """
+        return self.execute_command('CLUSTER RESET',
+                                    b'SOFT' if soft else b'HARD',
+                                    target_nodes=target_nodes)
+
+    def cluster_save_config(self, target_nodes):
+        """
+        Forces the node to save cluster state on disk
+
+        :target_nodes: 'ClusterNode' or 'list(ClusterNodes)'
+            The node/s to execute the command on
+        """
+        return self.execute_command('CLUSTER SAVECONFIG',
+                                    target_nodes=target_nodes)
+
+    def cluster_get_keys_in_slot(self, slot, num_keys):
+        """
+        Returns the number of keys in the specified cluster slot
+        """
+        return self.execute_command('CLUSTER GETKEYSINSLOT', slot, num_keys)
+
+    def cluster_set_config_epoch(self, target_nodes, epoch):
+        """
+        Set the configuration epoch in a new node
+
+        :target_nodes: 'ClusterNode' or 'list(ClusterNodes)'
+            The node/s to execute the command on
+        """
+        return self.execute_command('CLUSTER SET-CONFIG-EPOCH', epoch,
+                                    target_nodes=target_nodes)
+
+    def cluster_setslot(self, target_node, node_id, slot_id, state):
+        """
+        Bind an hash slot to a specific node
+
+        :target_node: 'ClusterNode'
+            The node to execute the command on
+        """
+        if state.upper() in ('IMPORTING', 'NODE', 'MIGRATING'):
+            return self.execute_command('CLUSTER SETSLOT', slot_id, state,
+                                        node_id, target_nodes=target_node)
+        elif state.upper() == 'STABLE':
+            raise RedisError('For "stable" state please use '
+                             'cluster_setslot_stable')
+        else:
+            raise RedisError('Invalid slot state: {0}'.format(state))
+
+    def cluster_setslot_stable(self, slot_id):
+        """
+        Clears migrating / importing state from the slot.
+        It determines by it self what node the slot is in and sends it there.
+        """
+        return self.execute_command('CLUSTER SETSLOT', slot_id, 'STABLE')
+
+    def cluster_replicas(self, node_id):
+        """
+        Provides a list of replica nodes replicating from the specified primary
+        target node.
+        Sends to random node in the cluster.
+        """
+        return self.execute_command('CLUSTER REPLICAS', node_id)
+
+    def cluster_slots(self):
+        """
+        Get array of Cluster slot to node mappings
+
+        Sends to random node in the cluster
+        """
+        return self.execute_command('CLUSTER SLOTS')
+
+    def readonly(self, target_nodes=None):
+        """
+        Enables read queries.
+        The command will be sent to all replica nodes if target_nodes is not
+        specified.
+
+        :target_nodes: 'ClusterNode' or 'list(ClusterNodes)'
+            The node/s to execute the command on
+         """
+        self.read_from_replicas = True
+        return self.execute_command('READONLY', target_nodes=target_nodes)
+
+    def readwrite(self, target_nodes=None):
+        """
+        Disables read queries.
+        The command will be sent to all replica nodes if target_nodes is not
+        specified.
+
+        :target_nodes: 'ClusterNode' or 'list(ClusterNodes)'
+            The node/s to execute the command on
+        """
+        # Reset read from replicas flag
+        self.read_from_replicas = False
+        return self.execute_command('READWRITE', target_nodes=target_nodes)
