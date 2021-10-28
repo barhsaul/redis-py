@@ -944,6 +944,10 @@ C 3
 redis-py is now supports cluster mode and provides a client for
 [Redis Cluster](<https://redis.io/topics/cluster-tutorial>).
 
+The cluster client is based on [redis-py-cluster](https://github.com/Grokzen/redis-py-cluster)
+by Grokzen, with a lot of added and 
+changed functionality.
+
 **Create RedisCluster:**
 
 Connecting redis-py to the Redis Cluster instance(s) is easy.
