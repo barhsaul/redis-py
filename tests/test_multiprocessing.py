@@ -6,7 +6,7 @@ import redis
 from redis.connection import Connection, ConnectionPool
 from redis.exceptions import ConnectionError
 
-from .conftest import _get_client, skip_if_server_version_lt
+from .conftest import _get_client
 
 
 @contextlib.contextmanager
