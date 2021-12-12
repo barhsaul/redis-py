@@ -868,6 +868,7 @@ class Redis(RedisModuleCommands, CoreCommands, SentinelCommands):
         errors=None,
         decode_responses=False,
         retry_on_timeout=False,
+        retry_on_response_error=False,
         ssl=False,
         ssl_keyfile=None,
         ssl_certfile=None,
@@ -912,6 +913,7 @@ class Redis(RedisModuleCommands, CoreCommands, SentinelCommands):
                 "encoding_errors": encoding_errors,
                 "decode_responses": decode_responses,
                 "retry_on_timeout": retry_on_timeout,
+                "retry_on_response_error": retry_on_response_error,
                 "retry": copy.deepcopy(retry),
                 "max_connections": max_connections,
                 "health_check_interval": health_check_interval,
@@ -1145,8 +1147,12 @@ class Redis(RedisModuleCommands, CoreCommands, SentinelCommands):
         is not a TimeoutError
         """
         conn.disconnect()
-        if not (conn.retry_on_timeout and isinstance(error, TimeoutError)):
+        if not (conn.retry_on_timeout and isinstance(error, TimeoutError)) or \
+           not (conn.retry_on_response_error and isinstance(error, ResponseError)):
+            print(f"raising error")
             raise error
+        if isinstance(error, ResponseError):
+            print(f"Found ResponseError and not raising it!: {error.__str__()}")
 
     # COMMAND EXECUTION AND PROTOCOL PARSING
     def execute_command(self, *args, **options):

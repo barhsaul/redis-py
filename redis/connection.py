@@ -513,6 +513,7 @@ class Connection:
         socket_keepalive_options=None,
         socket_type=0,
         retry_on_timeout=False,
+        retry_on_response_error=False,
         encoding="utf-8",
         encoding_errors="strict",
         decode_responses=False,
@@ -542,7 +543,8 @@ class Connection:
         self.socket_keepalive_options = socket_keepalive_options or {}
         self.socket_type = socket_type
         self.retry_on_timeout = retry_on_timeout
-        if retry_on_timeout:
+        self.retry_on_response_error = retry_on_response_error
+        if retry_on_timeout or retry_on_response_error:
             if retry is None:
                 self.retry = Retry(NoBackoff(), 1)
             else:
@@ -1018,6 +1020,7 @@ URL_QUERY_ARGUMENT_PARSERS = {
     "socket_connect_timeout": float,
     "socket_keepalive": to_bool,
     "retry_on_timeout": to_bool,
+    "retry_on_response_error": to_bool,
     "max_connections": int,
     "health_check_interval": int,
     "ssl_check_hostname": to_bool,
