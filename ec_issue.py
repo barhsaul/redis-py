@@ -9,13 +9,14 @@ class Config:
     default_host = "localhost"
     master_host = "ezbenchgc0hng9j-m5-large-6-x-001.eka2zi.0001.use1devo.elmo-dev.amazonaws.com"
     replica_host = "xxx.xx.0001.xxxx.cache.amazonaws.com"
-    redis_db = 8
+    redis_db = 0
     socket_conn_timeout = 10
     request_delay_sec = 0.1
 
 def get_redis_client():
     return Redis(
-        host=Config.master_host,
+        host=Config.default_host,
+        port=1111,
         db=Config.redis_db,
         socket_connect_timeout=Config.socket_conn_timeout,
         retry_on_response_error=True,

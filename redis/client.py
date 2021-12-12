@@ -22,6 +22,7 @@ from redis.exceptions import (
     ResponseError,
     TimeoutError,
     WatchError,
+    ReadOnlyError,
 )
 from redis.lock import Lock
 from redis.utils import safe_str, str_if_bytes
@@ -1147,12 +1148,13 @@ class Redis(RedisModuleCommands, CoreCommands, SentinelCommands):
         is not a TimeoutError
         """
         conn.disconnect()
-        if not (conn.retry_on_timeout and isinstance(error, TimeoutError)) or \
-           not (conn.retry_on_response_error and isinstance(error, ResponseError)):
+        if isinstance(error, ReadOnlyError):
+            print(f"Found ResponseError and not raising it!: {error.__str__()}")
+        if not (conn.retry_on_timeout and isinstance(error, TimeoutError)) and \
+           not (conn.retry_on_response_error and isinstance(error, (ReadOnlyError))):
             print(f"raising error")
             raise error
-        if isinstance(error, ResponseError):
-            print(f"Found ResponseError and not raising it!: {error.__str__()}")
+
 
     # COMMAND EXECUTION AND PROTOCOL PARSING
     def execute_command(self, *args, **options):

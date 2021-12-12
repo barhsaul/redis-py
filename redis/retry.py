@@ -1,13 +1,13 @@
 from time import sleep
 
-from redis.exceptions import ConnectionError, TimeoutError
+from redis.exceptions import ConnectionError, TimeoutError, ReadOnlyError
 
 
 class Retry:
     """Retry a specific number of times after a failure"""
 
     def __init__(
-        self, backoff, retries, supported_errors=(ConnectionError, TimeoutError)
+        self, backoff, retries, supported_errors=(ConnectionError, TimeoutError, ReadOnlyError)
     ):
         """
         Initialize a `Retry` object with a `Backoff` object
