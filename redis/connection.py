@@ -513,7 +513,7 @@ class Connection:
         socket_keepalive_options=None,
         socket_type=0,
         retry_on_timeout=False,
-        retry_on_response_error=False,
+        retry_on_error=None,
         encoding="utf-8",
         encoding_errors="strict",
         decode_responses=False,
@@ -527,8 +527,10 @@ class Connection:
     ):
         """
         Initialize a new Connection.
-        To specify a retry policy, first set `retry_on_timeout` to `True`
-        then set `retry` to a valid `Retry` object
+        To specify a retry policy for specific errors, first set
+        `retry_on_error` to a list of the error/s to retry on, then set
+        `retry` to a valid `Retry` object.
+        To retry on TimeoutError, `retry_on_timeout` can also be set to `True`.
         """
         self.pid = os.getpid()
         self.host = host
@@ -542,9 +544,12 @@ class Connection:
         self.socket_keepalive = socket_keepalive
         self.socket_keepalive_options = socket_keepalive_options or {}
         self.socket_type = socket_type
-        self.retry_on_timeout = retry_on_timeout
-        self.retry_on_response_error = retry_on_response_error
-        if retry_on_timeout or retry_on_response_error:
+        if retry_on_timeout:
+            # Add TimeoutError to the errors list to retry on
+            retry_on_error = [] if retry_on_error is None else retry_on_error
+            retry_on_error.append(TimeoutError)
+        self.retry_on_error = retry_on_error
+        if self.retry_on_error:
             if retry is None:
                 self.retry = Retry(NoBackoff(), 1)
             else:
@@ -939,6 +944,7 @@ class UnixDomainSocketConnection(Connection):
         encoding_errors="strict",
         decode_responses=False,
         retry_on_timeout=False,
+        retry_on_error=None,
         parser_class=DefaultParser,
         socket_read_size=65536,
         health_check_interval=0,
@@ -947,8 +953,10 @@ class UnixDomainSocketConnection(Connection):
     ):
         """
         Initialize a new UnixDomainSocketConnection.
-        To specify a retry policy, first set `retry_on_timeout` to `True`
-        then set `retry` to a valid `Retry` object
+        To specify a retry policy for specific errors, first set
+        `retry_on_error` to a list of the error/s to retry on, then set
+        `retry` to a valid `Retry` object.
+        To retry on TimeoutError, `retry_on_timeout` can also be set to `True`.
         """
         self.pid = os.getpid()
         self.path = path
@@ -957,8 +965,12 @@ class UnixDomainSocketConnection(Connection):
         self.client_name = client_name
         self.password = password
         self.socket_timeout = socket_timeout
-        self.retry_on_timeout = retry_on_timeout
         if retry_on_timeout:
+            # Add TimeoutError to the errors list to retry on
+            retry_on_error = [] if retry_on_error is None else retry_on_error
+            retry_on_error.append(TimeoutError)
+        self.retry_on_error = retry_on_error
+        if self.retry_on_error:
             if retry is None:
                 self.retry = Retry(NoBackoff(), 1)
             else:
@@ -1020,7 +1032,7 @@ URL_QUERY_ARGUMENT_PARSERS = {
     "socket_connect_timeout": float,
     "socket_keepalive": to_bool,
     "retry_on_timeout": to_bool,
-    "retry_on_response_error": to_bool,
+    "retry_on_error": list,
     "max_connections": int,
     "health_check_interval": int,
     "ssl_check_hostname": to_bool,

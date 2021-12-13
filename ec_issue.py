@@ -1,5 +1,5 @@
 from datetime import datetime
-from redis import Redis, RedisError
+from redis import Redis, RedisError, ReadOnlyError, BusyLoadingError
 import time
 import sys
 import random
@@ -19,7 +19,8 @@ def get_redis_client():
         port=1111,
         db=Config.redis_db,
         socket_connect_timeout=Config.socket_conn_timeout,
-        retry_on_response_error=True,
+        retry_on_timeout=True,
+        retry_on_error=[ReadOnlyError, BusyLoadingError],
     )
 
 def get_random_key_value():

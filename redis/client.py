@@ -22,7 +22,7 @@ from redis.exceptions import (
     ResponseError,
     TimeoutError,
     WatchError,
-    ReadOnlyError,
+    ReadOnlyError, BusyLoadingError,
 )
 from redis.lock import Lock
 from redis.utils import safe_str, str_if_bytes
@@ -869,7 +869,7 @@ class Redis(RedisModuleCommands, CoreCommands, SentinelCommands):
         errors=None,
         decode_responses=False,
         retry_on_timeout=False,
-        retry_on_response_error=False,
+        retry_on_error=None,
         ssl=False,
         ssl_keyfile=None,
         ssl_certfile=None,
@@ -886,8 +886,10 @@ class Redis(RedisModuleCommands, CoreCommands, SentinelCommands):
     ):
         """
         Initialize a new Redis client.
-        To specify a retry policy, first set `retry_on_timeout` to `True`
-        then set `retry` to a valid `Retry` object
+        To specify a retry policy for specific errors, first set
+        `retry_on_error` to a list of the error/s to retry on, then set
+        `retry` to a valid `Retry` object.
+        To retry on TimeoutError, `retry_on_timeout` can also be set to `True`.
         """
         if not connection_pool:
             if charset is not None:
@@ -904,7 +906,10 @@ class Redis(RedisModuleCommands, CoreCommands, SentinelCommands):
                     )
                 )
                 encoding_errors = errors
-
+            if retry_on_timeout is True:
+                retry_on_error = [] if retry_on_error is None else \
+                                                              retry_on_error
+                retry_on_error.append(TimeoutError)
             kwargs = {
                 "db": db,
                 "username": username,
@@ -913,8 +918,7 @@ class Redis(RedisModuleCommands, CoreCommands, SentinelCommands):
                 "encoding": encoding,
                 "encoding_errors": encoding_errors,
                 "decode_responses": decode_responses,
-                "retry_on_timeout": retry_on_timeout,
-                "retry_on_response_error": retry_on_response_error,
+                "retry_on_error": retry_on_error,
                 "retry": copy.deepcopy(retry),
                 "max_connections": max_connections,
                 "health_check_interval": health_check_interval,
@@ -1144,17 +1148,16 @@ class Redis(RedisModuleCommands, CoreCommands, SentinelCommands):
     def _disconnect_raise(self, conn, error):
         """
         Close the connection and raise an exception
-        if retry_on_timeout is not set or the error
-        is not a TimeoutError
+        if retry_on_error is not set or the error
+        is not one of the specified error types
         """
         conn.disconnect()
-        if isinstance(error, ReadOnlyError):
-            print(f"Found ResponseError and not raising it!: {error.__str__()}")
-        if not (conn.retry_on_timeout and isinstance(error, TimeoutError)) and \
-           not (conn.retry_on_response_error and isinstance(error, (ReadOnlyError))):
+        if not (conn.retry_on_error and
+                isinstance(error, tuple(conn.retry_on_error))):
             print(f"raising error")
             raise error
-
+        else:
+            print(f"Found an error and not raising it!: {type(error)}, {error.__str__()}")
 
     # COMMAND EXECUTION AND PROTOCOL PARSING
     def execute_command(self, *args, **options):
