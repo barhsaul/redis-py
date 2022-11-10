@@ -46,6 +46,7 @@ from redis.commands import (
     list_or_args,
 )
 from redis.compat import Protocol, TypedDict
+from redis.credentials import CredentialProvider
 from redis.exceptions import (
     ConnectionError,
     ExecAbortError,
@@ -106,7 +107,7 @@ class Redis(
 
             redis://[[username]:[password]]@localhost:6379/0
             rediss://[[username]:[password]]@localhost:6379/0
-            unix://[[username]:[password]]@/path/to/socket.sock?db=0
+            unix://[username@]/path/to/socket.sock?db=0[&password=password]
 
         Three URL schemes are supported:
 
@@ -174,6 +175,7 @@ class Redis(
         retry: Optional[Retry] = None,
         auto_close_connection_pool: bool = True,
         redis_connect_func=None,
+        credential_provider: Optional[CredentialProvider] = None,
     ):
         """
         Initialize a new Redis client.
@@ -199,6 +201,7 @@ class Redis(
                 "db": db,
                 "username": username,
                 "password": password,
+                "credential_provider": credential_provider,
                 "socket_timeout": socket_timeout,
                 "encoding": encoding,
                 "encoding_errors": encoding_errors,
@@ -501,12 +504,17 @@ class Redis(
         try:
             if NEVER_DECODE in options:
                 response = await connection.read_response(disable_decoding=True)
+                options.pop(NEVER_DECODE)
             else:
                 response = await connection.read_response()
         except ResponseError:
             if EMPTY_RESPONSE in options:
                 return options[EMPTY_RESPONSE]
             raise
+
+        if EMPTY_RESPONSE in options:
+            options.pop(EMPTY_RESPONSE)
+
         if command_name in self.response_callbacks:
             # Mypy bug: https://github.com/python/mypy/issues/10977
             command_name = cast(str, command_name)
@@ -754,15 +762,11 @@ class PubSub:
 
         await self.check_health()
 
-        async def try_read():
-            if not block:
-                if not await conn.can_read(timeout=timeout):
-                    return None
-            else:
-                await conn.connect()
-            return await conn.read_response()
+        if not conn.is_connected:
+            await conn.connect()
 
-        response = await self._execute(conn, try_read)
+        read_timeout = None if block else timeout
+        response = await self._execute(conn, conn.read_response, timeout=read_timeout)
 
         if conn.health_check_interval and response == self.health_check_response:
             # ignore the health check message as user might not expect it
@@ -874,16 +878,16 @@ class PubSub:
                 yield response
 
     async def get_message(
-        self, ignore_subscribe_messages: bool = False, timeout: float = 0.0
+        self, ignore_subscribe_messages: bool = False, timeout: Optional[float] = 0.0
     ):
         """
         Get the next message if one is available, otherwise None.
 
         If timeout is specified, the system will wait for `timeout` seconds
         before returning. Timeout should be specified as a floating point
-        number.
+        number or None to wait indefinitely.
         """
-        response = await self.parse_response(block=False, timeout=timeout)
+        response = await self.parse_response(block=(timeout is None), timeout=timeout)
         if response:
             return await self.handle_message(response, ignore_subscribe_messages)
         return None

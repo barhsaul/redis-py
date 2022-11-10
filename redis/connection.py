@@ -8,11 +8,11 @@ import weakref
 from itertools import chain
 from queue import Empty, Full, LifoQueue
 from time import time
+from typing import Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
-from packaging.version import Version
-
 from redis.backoff import NoBackoff
+from redis.credentials import CredentialProvider, UsernamePasswordCredentialProvider
 from redis.exceptions import (
     AuthenticationError,
     AuthenticationWrongNumberOfArgsError,
@@ -54,16 +54,6 @@ NONBLOCKING_EXCEPTIONS = tuple(NONBLOCKING_EXCEPTION_ERROR_NUMBERS.keys())
 if HIREDIS_AVAILABLE:
     import hiredis
 
-    hiredis_version = Version(hiredis.__version__)
-    HIREDIS_SUPPORTS_CALLABLE_ERRORS = hiredis_version >= Version("0.1.3")
-    HIREDIS_SUPPORTS_BYTE_BUFFER = hiredis_version >= Version("0.1.4")
-    HIREDIS_SUPPORTS_ENCODING_ERRORS = hiredis_version >= Version("1.0.0")
-
-    HIREDIS_USE_BYTE_BUFFER = True
-    # only use byte buffer if hiredis supports it
-    if not HIREDIS_SUPPORTS_BYTE_BUFFER:
-        HIREDIS_USE_BYTE_BUFFER = False
-
 SYM_STAR = b"*"
 SYM_DOLLAR = b"$"
 SYM_CRLF = b"\r\n"
@@ -80,6 +70,15 @@ MODULE_EXPORTS_DATA_TYPES_ERROR = (
     "exports one or more module-side data "
     "types, can't unload"
 )
+# user send an AUTH cmd to a server without authorization configured
+NO_AUTH_SET_ERROR = {
+    # Redis >= 6.0
+    "AUTH <password> called without any password "
+    "configured for the default user. Are you sure "
+    "your configuration is correct?": AuthenticationError,
+    # Redis < 6.0
+    "Client sent AUTH, but no password is set": AuthenticationError,
+}
 
 
 class Encoder:
@@ -127,7 +126,6 @@ class BaseParser:
     EXCEPTION_CLASSES = {
         "ERR": {
             "max number of clients reached": ConnectionError,
-            "Client sent AUTH, but no password is set": AuthenticationError,
             "invalid password": AuthenticationError,
             # some Redis server versions report invalid command syntax
             # in lowercase
@@ -141,7 +139,9 @@ class BaseParser:
             MODULE_EXPORTS_DATA_TYPES_ERROR: ModuleError,
             NO_SUCH_MODULE_ERROR: ModuleError,
             MODULE_UNLOAD_NOT_POSSIBLE_ERROR: ModuleError,
+            **NO_AUTH_SET_ERROR,
         },
+        "WRONGPASS": AuthenticationError,
         "EXECABORT": ExecAbortError,
         "LOADING": BusyLoadingError,
         "NOSCRIPT": NoScriptError,
@@ -370,9 +370,7 @@ class HiredisParser(BaseParser):
         if not HIREDIS_AVAILABLE:
             raise RedisError("Hiredis is not installed")
         self.socket_read_size = socket_read_size
-
-        if HIREDIS_USE_BYTE_BUFFER:
-            self._buffer = bytearray(socket_read_size)
+        self._buffer = bytearray(socket_read_size)
 
     def __del__(self):
         try:
@@ -383,16 +381,14 @@ class HiredisParser(BaseParser):
     def on_connect(self, connection, **kwargs):
         self._sock = connection._sock
         self._socket_timeout = connection.socket_timeout
-        kwargs = {"protocolError": InvalidResponse, "replyError": self.parse_error}
-
-        # hiredis < 0.1.3 doesn't support functions that create exceptions
-        if not HIREDIS_SUPPORTS_CALLABLE_ERRORS:
-            kwargs["replyError"] = ResponseError
+        kwargs = {
+            "protocolError": InvalidResponse,
+            "replyError": self.parse_error,
+            "errors": connection.encoder.encoding_errors,
+        }
 
         if connection.encoder.decode_responses:
             kwargs["encoding"] = connection.encoder.encoding
-        if HIREDIS_SUPPORTS_ENCODING_ERRORS:
-            kwargs["errors"] = connection.encoder.encoding_errors
         self._reader = hiredis.Reader(**kwargs)
         self._next_response = False
 
@@ -417,17 +413,10 @@ class HiredisParser(BaseParser):
         try:
             if custom_timeout:
                 sock.settimeout(timeout)
-            if HIREDIS_USE_BYTE_BUFFER:
-                bufflen = self._sock.recv_into(self._buffer)
-                if bufflen == 0:
-                    raise ConnectionError(SERVER_CLOSED_CONNECTION_ERROR)
-                self._reader.feed(self._buffer, 0, bufflen)
-            else:
-                buffer = self._sock.recv(self.socket_read_size)
-                # an empty string indicates the server shutdown the socket
-                if not isinstance(buffer, bytes) or len(buffer) == 0:
-                    raise ConnectionError(SERVER_CLOSED_CONNECTION_ERROR)
-                self._reader.feed(buffer)
+            bufflen = self._sock.recv_into(self._buffer)
+            if bufflen == 0:
+                raise ConnectionError(SERVER_CLOSED_CONNECTION_ERROR)
+            self._reader.feed(self._buffer, 0, bufflen)
             # data was read from the socket and added to the buffer.
             # return True to indicate that data was read.
             return True
@@ -469,17 +458,6 @@ class HiredisParser(BaseParser):
                 response = self._reader.gets(False)
             else:
                 response = self._reader.gets()
-        # if an older version of hiredis is installed, we need to attempt
-        # to convert ResponseErrors to their appropriate types.
-        if not HIREDIS_SUPPORTS_CALLABLE_ERRORS:
-            if isinstance(response, ResponseError):
-                response = self.parse_error(response.args[0])
-            elif (
-                isinstance(response, list)
-                and response
-                and isinstance(response[0], ResponseError)
-            ):
-                response[0] = self.parse_error(response[0].args[0])
         # if the response is a ConnectionError or the response is a list and
         # the first item is a ConnectionError, raise it as something bad
         # happened
@@ -526,6 +504,7 @@ class Connection:
         username=None,
         retry=None,
         redis_connect_func=None,
+        credential_provider: Optional[CredentialProvider] = None,
     ):
         """
         Initialize a new Connection.
@@ -534,13 +513,21 @@ class Connection:
         `retry` to a valid `Retry` object.
         To retry on TimeoutError, `retry_on_timeout` can also be set to `True`.
         """
+        if (username or password) and credential_provider is not None:
+            raise DataError(
+                "'username' and 'password' cannot be passed along with 'credential_"
+                "provider'. Please provide only one of the following arguments: \n"
+                "1. 'password' and (optional) 'username'\n"
+                "2. 'credential_provider'"
+            )
         self.pid = os.getpid()
         self.host = host
         self.port = int(port)
         self.db = db
-        self.username = username
         self.client_name = client_name
+        self.credential_provider = credential_provider
         self.password = password
+        self.username = username
         self.socket_timeout = socket_timeout
         self.socket_connect_timeout = socket_connect_timeout or socket_timeout
         self.socket_keepalive = socket_keepalive
@@ -699,12 +686,13 @@ class Connection:
         "Initialize the connection, authenticate and select a database"
         self._parser.on_connect(self)
 
-        # if username and/or password are set, authenticate
-        if self.username or self.password:
-            if self.username:
-                auth_args = (self.username, self.password or "")
-            else:
-                auth_args = (self.password,)
+        # if credential provider or username and/or password are set, authenticate
+        if self.credential_provider or (self.username or self.password):
+            cred_provider = (
+                self.credential_provider
+                or UsernamePasswordCredentialProvider(self.username, self.password)
+            )
+            auth_args = cred_provider.get_credentials()
             # avoid checking health here -- PING will fail if we try
             # to check the health prior to the AUTH
             self.send_command("AUTH", *auth_args, check_health=False)
@@ -716,7 +704,7 @@ class Connection:
                 # server seems to be < 6.0.0 which expects a single password
                 # arg. retry auth with just the password.
                 # https://github.com/andymccurdy/redis-py/issues/1274
-                self.send_command("AUTH", self.password, check_health=False)
+                self.send_command("AUTH", auth_args[-1], check_health=False)
                 auth_response = self.read_response()
 
             if str_if_bytes(auth_response) != "OK":
@@ -790,7 +778,7 @@ class Connection:
                 errno = e.args[0]
                 errmsg = e.args[1]
             raise ConnectionError(f"Error {errno} while writing to socket. {errmsg}.")
-        except BaseException:
+        except Exception:
             self.disconnect()
             raise
 
@@ -828,7 +816,7 @@ class Connection:
         except OSError as e:
             self.disconnect()
             raise ConnectionError(f"Error while reading from {hosterr}" f" : {e.args}")
-        except BaseException:
+        except Exception:
             self.disconnect()
             raise
 
@@ -1074,6 +1062,7 @@ class UnixDomainSocketConnection(Connection):
         client_name=None,
         retry=None,
         redis_connect_func=None,
+        credential_provider: Optional[CredentialProvider] = None,
     ):
         """
         Initialize a new UnixDomainSocketConnection.
@@ -1082,12 +1071,20 @@ class UnixDomainSocketConnection(Connection):
         `retry` to a valid `Retry` object.
         To retry on TimeoutError, `retry_on_timeout` can also be set to `True`.
         """
+        if (username or password) and credential_provider is not None:
+            raise DataError(
+                "'username' and 'password' cannot be passed along with 'credential_"
+                "provider'. Please provide only one of the following arguments: \n"
+                "1. 'password' and (optional) 'username'\n"
+                "2. 'credential_provider'"
+            )
         self.pid = os.getpid()
         self.path = path
         self.db = db
-        self.username = username
         self.client_name = client_name
+        self.credential_provider = credential_provider
         self.password = password
+        self.username = username
         self.socket_timeout = socket_timeout
         self.retry_on_timeout = retry_on_timeout
         if retry_on_error is SENTINEL:
@@ -1166,6 +1163,16 @@ URL_QUERY_ARGUMENT_PARSERS = {
 
 
 def parse_url(url):
+    if not (
+        url.startswith("redis://")
+        or url.startswith("rediss://")
+        or url.startswith("unix://")
+    ):
+        raise ValueError(
+            "Redis URL must specify one of the following "
+            "schemes (redis://, rediss://, unix://)"
+        )
+
     url = urlparse(url)
     kwargs = {}
 
@@ -1192,7 +1199,7 @@ def parse_url(url):
             kwargs["path"] = unquote(url.path)
         kwargs["connection_class"] = UnixDomainSocketConnection
 
-    elif url.scheme in ("redis", "rediss"):
+    else:  # implied:  url.scheme in ("redis", "rediss"):
         if url.hostname:
             kwargs["host"] = unquote(url.hostname)
         if url.port:
@@ -1208,11 +1215,6 @@ def parse_url(url):
 
         if url.scheme == "rediss":
             kwargs["connection_class"] = SSLConnection
-    else:
-        raise ValueError(
-            "Redis URL must specify one of the following "
-            "schemes (redis://, rediss://, unix://)"
-        )
 
     return kwargs
 
@@ -1240,7 +1242,7 @@ class ConnectionPool:
 
             redis://[[username]:[password]]@localhost:6379/0
             rediss://[[username]:[password]]@localhost:6379/0
-            unix://[[username]:[password]]@/path/to/socket.sock?db=0
+            unix://[username@]/path/to/socket.sock?db=0[&password=password]
 
         Three URL schemes are supported:
 

@@ -9,7 +9,7 @@ import pytest
 
 import redis
 from redis import exceptions
-from redis.client import parse_info
+from redis.client import EMPTY_RESPONSE, NEVER_DECODE, parse_info
 
 from .conftest import (
     _get_client,
@@ -68,6 +68,14 @@ class TestResponseCallbacks:
 class TestRedisCommands:
     @skip_if_redis_enterprise()
     def test_auth(self, r, request):
+        # sending an AUTH command before setting a user/password on the
+        # server should return an AuthenticationError
+        with pytest.raises(exceptions.AuthenticationError):
+            r.auth("some_password")
+
+        with pytest.raises(exceptions.AuthenticationError):
+            r.auth("some_password", "some_user")
+
         # first, test for default user (`username` is supposed to be optional)
         default_username = "default"
         temp_pass = "temp_pass"
@@ -81,9 +89,19 @@ class TestRedisCommands:
 
         def teardown():
             try:
-                r.auth(temp_pass)
-            except exceptions.ResponseError:
-                r.auth("default", "")
+                # this is needed because after an AuthenticationError the connection
+                # is closed, and if we send an AUTH command a new connection is
+                # created, but in this case we'd get an "Authentication required"
+                # error when switching to the db 9 because we're not authenticated yet
+                # setting the password on the connection itself triggers the
+                # authentication in the connection's `on_connect` method
+                r.connection.password = temp_pass
+            except AttributeError:
+                # connection field is not set in Redis Cluster, but that's ok
+                # because the problem discussed above does not apply to Redis Cluster
+                pass
+
+            r.auth(temp_pass)
             r.config_set("requirepass", "")
             r.acl_deluser(username)
 
@@ -95,7 +113,7 @@ class TestRedisCommands:
 
         assert r.auth(username=username, password="strong_password") is True
 
-        with pytest.raises(exceptions.ResponseError):
+        with pytest.raises(exceptions.AuthenticationError):
             r.auth(username=username, password="wrong_password")
 
     def test_command_on_invalid_key_type(self, r):
@@ -898,6 +916,16 @@ class TestRedisCommands:
         assert r.bgsave()
         time.sleep(0.3)
         assert r.bgsave(True)
+
+    def test_never_decode_option(self, r: redis.Redis):
+        opts = {NEVER_DECODE: []}
+        r.delete("a")
+        assert r.execute_command("EXISTS", "a", **opts) == 0
+
+    def test_empty_response_option(self, r: redis.Redis):
+        opts = {EMPTY_RESPONSE: []}
+        r.delete("a")
+        assert r.execute_command("EXISTS", "a", **opts) == 0
 
     # BASIC KEY COMMANDS
     def test_append(self, r):
@@ -4437,6 +4465,19 @@ class TestRedisCommands:
             .execute()
         )
         assert resp == [0, None, 255]
+
+    @skip_if_server_version_lt("6.0.0")
+    def test_bitfield_ro(self, r: redis.Redis):
+        bf = r.bitfield("a")
+        resp = bf.set("u8", 8, 255).execute()
+        assert resp == [0]
+
+        resp = r.bitfield_ro("a", "u8", 0)
+        assert resp == [0]
+
+        items = [("u4", 8), ("u4", 12), ("u4", 13)]
+        resp = r.bitfield_ro("a", "u8", 0, items)
+        assert resp == [0, 15, 15, 14]
 
     @skip_if_server_version_lt("4.0.0")
     def test_memory_help(self, r):

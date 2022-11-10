@@ -1504,6 +1504,29 @@ class BasicKeyCommands(CommandsProtocol):
         """
         return BitFieldOperation(self, key, default_overflow=default_overflow)
 
+    def bitfield_ro(
+        self: Union["Redis", "AsyncRedis"],
+        key: KeyT,
+        encoding: str,
+        offset: BitfieldOffsetT,
+        items: Optional[list] = None,
+    ) -> ResponseT:
+        """
+        Return an array of the specified bitfield values
+        where the first value is found using ``encoding`` and ``offset``
+        parameters and remaining values are result of corresponding
+        encoding/offset pairs in optional list ``items``
+        Read-only variant of the BITFIELD command.
+
+        For more information see https://redis.io/commands/bitfield_ro
+        """
+        params = [key, "GET", encoding, offset]
+
+        items = items or []
+        for encoding, offset in items:
+            params.extend(["GET", encoding, offset])
+        return self.execute_command("BITFIELD_RO", *params)
+
     def bitop(self, operation: str, dest: KeyT, *keys: KeyT) -> ResponseT:
         """
         Perform a bitwise operation using ``operation`` between ``keys`` and
@@ -2530,7 +2553,7 @@ class ListCommands(CommandsProtocol):
         self,
         num_keys: int,
         *args: List[str],
-        direction: str = None,
+        direction: str,
         count: Optional[int] = 1,
     ) -> Union[Awaitable[list], list]:
         """
@@ -4907,7 +4930,11 @@ class Script:
         if isinstance(script, str):
             # We need the encoding from the client in order to generate an
             # accurate byte representation of the script
-            encoder = registered_client.connection_pool.get_encoder()
+            try:
+                encoder = registered_client.connection_pool.get_encoder()
+            except AttributeError:
+                # Cluster
+                encoder = registered_client.get_encoder()
             script = encoder.encode(script)
         self.sha = hashlib.sha1(script).hexdigest()
 
@@ -4952,7 +4979,11 @@ class AsyncScript:
         if isinstance(script, str):
             # We need the encoding from the client in order to generate an
             # accurate byte representation of the script
-            encoder = registered_client.connection_pool.get_encoder()
+            try:
+                encoder = registered_client.connection_pool.get_encoder()
+            except AttributeError:
+                # Cluster
+                encoder = registered_client.get_encoder()
             script = encoder.encode(script)
         self.sha = hashlib.sha1(script).hexdigest()
 

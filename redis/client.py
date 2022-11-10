@@ -5,6 +5,7 @@ import threading
 import time
 import warnings
 from itertools import chain
+from typing import Optional
 
 from redis.commands import (
     CoreCommands,
@@ -13,6 +14,7 @@ from redis.commands import (
     list_or_args,
 )
 from redis.connection import ConnectionPool, SSLConnection, UnixDomainSocketConnection
+from redis.credentials import CredentialProvider
 from redis.exceptions import (
     ConnectionError,
     ExecAbortError,
@@ -863,7 +865,7 @@ class Redis(AbstractRedis, RedisModuleCommands, CoreCommands, SentinelCommands):
 
             redis://[[username]:[password]]@localhost:6379/0
             rediss://[[username]:[password]]@localhost:6379/0
-            unix://[[username]:[password]]@/path/to/socket.sock?db=0
+            unix://[username@]/path/to/socket.sock?db=0[&password=password]
 
         Three URL schemes are supported:
 
@@ -938,6 +940,7 @@ class Redis(AbstractRedis, RedisModuleCommands, CoreCommands, SentinelCommands):
         username=None,
         retry=None,
         redis_connect_func=None,
+        credential_provider: Optional[CredentialProvider] = None,
     ):
         """
         Initialize a new Redis client.
@@ -945,6 +948,12 @@ class Redis(AbstractRedis, RedisModuleCommands, CoreCommands, SentinelCommands):
         `retry_on_error` to a list of the error/s to retry on, then set
         `retry` to a valid `Retry` object.
         To retry on TimeoutError, `retry_on_timeout` can also be set to `True`.
+
+        Args:
+
+        single_connection_client:
+            if `True`, connection pool is not used. In that case `Redis`
+            instance use is not thread safe.
         """
         if not connection_pool:
             if charset is not None:
@@ -979,6 +988,7 @@ class Redis(AbstractRedis, RedisModuleCommands, CoreCommands, SentinelCommands):
                 "health_check_interval": health_check_interval,
                 "client_name": client_name,
                 "redis_connect_func": redis_connect_func,
+                "credential_provider": credential_provider,
             }
             # based on input, setup appropriate connection args
             if unix_socket_path is not None:
@@ -1252,12 +1262,17 @@ class Redis(AbstractRedis, RedisModuleCommands, CoreCommands, SentinelCommands):
         try:
             if NEVER_DECODE in options:
                 response = connection.read_response(disable_decoding=True)
+                options.pop(NEVER_DECODE)
             else:
                 response = connection.read_response()
         except ResponseError:
             if EMPTY_RESPONSE in options:
                 return options[EMPTY_RESPONSE]
             raise
+
+        if EMPTY_RESPONSE in options:
+            options.pop(EMPTY_RESPONSE)
+
         if command_name in self.response_callbacks:
             return self.response_callbacks[command_name](response, **options)
         return response
@@ -1631,13 +1646,13 @@ class PubSub:
             if response is not None:
                 yield response
 
-    def get_message(self, ignore_subscribe_messages=False, timeout=0):
+    def get_message(self, ignore_subscribe_messages=False, timeout=0.0):
         """
         Get the next message if one is available, otherwise None.
 
         If timeout is specified, the system will wait for `timeout` seconds
         before returning. Timeout should be specified as a floating point
-        number.
+        number, or None, to wait indefinitely.
         """
         if not self.subscribed:
             # Wait for subscription
@@ -1653,7 +1668,7 @@ class PubSub:
                 # so no messages are available
                 return None
 
-        response = self.parse_response(block=False, timeout=timeout)
+        response = self.parse_response(block=(timeout is None), timeout=timeout)
         if response:
             return self.handle_message(response, ignore_subscribe_messages)
         return None

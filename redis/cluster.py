@@ -121,6 +121,7 @@ REDIS_ALLOWED_KEYS = (
     "connection_class",
     "connection_pool",
     "client_name",
+    "credential_provider",
     "db",
     "decode_responses",
     "encoding",
@@ -388,7 +389,7 @@ class RedisCluster(AbstractRedisCluster, RedisClusterCommands):
 
             redis://[[username]:[password]]@localhost:6379/0
             rediss://[[username]:[password]]@localhost:6379/0
-            unix://[[username]:[password]]@/path/to/socket.sock?db=0
+            unix://[username@]/path/to/socket.sock?db=0[&password=password]
 
         Three URL schemes are supported:
 
